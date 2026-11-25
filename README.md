@@ -12,7 +12,7 @@
 **[Install](https://detail-embedding.github.io/detail/getting-started.html) · [Documentation](https://detail-embedding.github.io/detail/) · [User guides](https://detail-embedding.github.io/detail/user-guides/index.html)**
 
 > **Under active development.** Please report bugs and issues on the
-> [issue page](https://github.com/detail-embedding/detail/issues).
+> [issues page](https://github.com/detail-embedding/detail/issues).
 
 Detail is a video analysis tool for species-agnostic, setting-agnostic analysis of animal
 behavior. It detects and tracks animals with text-promptable foundation vision models (SAM 3,
