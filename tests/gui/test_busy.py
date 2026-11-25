@@ -38,6 +38,13 @@ after the cutoff had made batches available (13 of 86 full runs of
 had their own generation counters and nine had none. ``run_busy`` / ``run_progress`` take
 ``supersedes=name`` now — the newest call per name on a widget is the only one delivered — and
 ``requirements.a_reload_supersedes_its_last_call`` makes every reload-shaped method pass one.
+Dropping the older result was half of it: the older *work* still ran to its end. A location plot
+redraws on every control change, each draw 2–8 s on a 50-recording run, so ticking recordings off
+one by one queued a whole draw per tick, all competing for one interpreter, and the picture showed
+the last choice seconds after it was made — a hang, to the user. A ``run_progress`` call is now
+stopped at its next report by the call that supersedes it
+(``test_a_superseded_progress_call_stops_at_its_next_report``); a ``run_busy`` call reports
+nothing, so it can only be dropped.
 """
 
 import ast
@@ -591,6 +598,43 @@ def test_names_are_per_widget(qapp):
         qapp.processEvents()
         QTest.qWait(5)
     assert sorted(got) == ["first", "second"]
+
+
+def test_a_superseded_progress_call_stops_at_its_next_report(qapp):
+    """The second half of class 4: the newest call wins *and* the ones it superseded stop.
+
+    Dropped at delivery but left running, every superseded call ran to its end first: a run of
+    quick changes cost one whole job per change, and the newest waited behind them all.
+    """
+    host = QWidget()
+    reached, got, failed = [], [], []
+    older = run_progress(
+        host, _long_work(reached), got.append, on_error=failed.append, supersedes="plot"
+    )
+    until(qapp, lambda: reached, "the older call reaching its first report")
+    newer = run_progress(
+        host,
+        lambda emit: "newer",
+        got.append,
+        on_error=failed.append,
+        supersedes="plot",
+    )
+    finished(older, "the superseded call")
+    _drain(qapp, newer)
+    assert len(reached) < 2000, "the superseded call ran to its end"
+    assert got == ["newer"] and failed == [], (got, failed)
+
+
+def test_a_call_under_another_name_or_widget_is_not_stopped(qapp):
+    host, other = QWidget(), QWidget()
+    reached, got = [], []
+    older = run_progress(host, _long_work(reached, 50), got.append, supersedes="plot")
+    until(qapp, lambda: reached, "the first call reaching its first report")
+    run_progress(host, lambda emit: "named", got.append, supersedes="table")
+    run_progress(other, lambda emit: "elsewhere", got.append, supersedes="plot")
+    _drain(qapp, older)
+    until(qapp, lambda: len(got) == 3, "all three results")
+    assert len(reached) == 50 and sorted(got) == ["elsewhere", "finished", "named"]
 
 
 # --- cancel (reported from the app: Add frames could not be stopped, and ran twice) --------- #

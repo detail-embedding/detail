@@ -164,8 +164,8 @@ def pytest_runtest_protocol(item, nextitem):
 @pytest.fixture(autouse=True, scope="session")
 def _machine_state_floor(tmp_path_factory):
     """A **session-wide** throwaway home for every piece of machine-local state, below the
-    per-test isolation: the model cache, the video preview cache, the built docs site, and
-    ``~/.config/detail`` (storage.yaml, credentials).
+    per-test isolation: the model cache, the video preview cache, the built docs site,
+    ``~/.config/detail`` (storage.yaml, credentials), and the experiments root.
 
     A background thread can outlive its test: a GUI readiness check (``GlobalModelsPage`` →
     ``is_installed``), or a page's preview lookup (``key_for_video``, which writes the
@@ -298,6 +298,15 @@ def _isolate_machine_storage(tmp_path_factory, monkeypatch):
     re-imports ``locations`` and would otherwise resolve the real path; the **monkeypatch**
     is what redirects this process, where the module was imported long before the fixture
     ran. Credentials live in the same directory and follow the same override.
+
+    **The experiments root moves with it.** With no root in storage.yaml — and the isolated
+    one has none — ``locations.experiments_root()`` falls back to ``DEFAULT_ROOT``, the real
+    ``~/Documents/DetailExperiments``. That was each test's own job too, and the tool-run case
+    of ``tests/storage/test_id_reuse.py`` forgot: every full run left two stub tool runs in a
+    developer's real ``tools/`` folder, and the app's Quick tools rail raised ``KeyError:
+    'tool_id'`` on them. Only the monkeypatch half applies: nothing spawned resolves the root
+    (the tools workspace, ROI exports, experiment listing, creation and import are all
+    in-process); a worker that did would need an env var.
     """
     _point_machine_storage_at(
         monkeypatch, _isolation_dir(tmp_path_factory, "machine_config")
@@ -317,6 +326,7 @@ def _point_machine_storage_at(monkeypatch, config_dir: Path) -> None:
     monkeypatch.setattr(
         credentials, "CREDENTIALS_PATH", config_dir / "credentials.yaml"
     )
+    monkeypatch.setattr(locations, "DEFAULT_ROOT", config_dir / "DetailExperiments")
 
 
 # The component registries these cover are plain ``dict[str, type]`` in registries.py

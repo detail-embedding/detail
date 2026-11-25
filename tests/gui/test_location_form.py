@@ -7,13 +7,12 @@ round-trip guard cannot see it: that guard perturbs what the form *emits*, and a
 emits nothing for a field has nothing to perturb. This one starts from the model's fields.
 """
 
-from PyQt6.QtWidgets import QCheckBox
-
 from detail.configs.location_export import LocationExportConfig, option_names
 from detail.gui.modules.analysis_location import (
     EVERY_FRAME_TEXT,
     _LocationExportConfig,
 )
+from tests.api.test_keypoint_export import keypoint_runs  # noqa: F401 — a fixture
 
 
 def _options(form) -> dict:
@@ -32,13 +31,13 @@ def test_the_form_offers_every_option_of_the_config_at_its_default(qapp):
 
 def test_the_form_gives_back_every_option_it_is_handed(qapp):
     form = _LocationExportConfig()
-    wanted = {"sample_fps": 5.0, "remove_thin_parts": True, "thin_part_scale": 0.2}
+    wanted = {"sample_fps": 5.0}
     assert set(wanted) == set(option_names()), "a new option needs a value in this test"
     form.load_config(wanted)
     assert _options(form) == wanted
     # and back to unset: None is a value the form must be able to show, not skip
-    form.load_config({"sample_fps": None, "remove_thin_parts": False})
-    assert _options(form) == {**wanted, "sample_fps": None, "remove_thin_parts": False}
+    form.load_config({"sample_fps": None})
+    assert _options(form) == {"sample_fps": None}
 
 
 def test_an_unset_rate_reads_as_every_frame(qapp):
@@ -48,14 +47,44 @@ def test_an_unset_rate_reads_as_every_frame(qapp):
     assert form._options["sample_fps"].text() != EVERY_FRAME_TEXT
 
 
-def test_the_scale_can_be_set_only_while_thin_parts_are_removed(qapp):
+def test_a_config_from_before_thin_parts_were_removed_restores_without_them(qapp):
+    # an older run's record still carries the removed options; the form shows what it has
     form = _LocationExportConfig()
-    thin, scale = form._options["remove_thin_parts"], form._options["thin_part_scale"]
-    assert isinstance(thin, QCheckBox)
-    assert not thin.isChecked() and not scale.isEnabled()
-    thin.setChecked(True)
-    assert scale.isEnabled()
-    thin.setChecked(False)
-    assert not scale.isEnabled()
-    # a disabled box still reports its value: the record names the scale either way
-    assert form.config()["thin_part_scale"] == LocationExportConfig().thin_part_scale
+    form.load_config(
+        {"sample_fps": 2.0, "remove_thin_parts": True, "thin_part_scale": 0.2}
+    )
+    assert _options(form) == {"sample_fps": 2.0}
+    assert "remove_thin_parts" not in form.config()
+
+
+def test_keypoints_are_optional_and_their_settings_are_emitted_when_chosen(
+    qapp, keypoint_runs
+):
+    """The keypoint picker starts on "(none)", which emits nothing (an export with no
+    keypoints); a keypoint track setting chosen is emitted as ``keypoint_track_spec``, which
+    the run resolves to each recording's own run and checks against the tracking run."""
+    from detail.gui.modules.analysis_location import NO_KEYPOINTS_TEXT
+    from detail.storage import recording as recording_store
+
+    _it, recording = keypoint_runs
+    data = recording_store.read_recording(recording.dir)
+    data.setdefault("keypoint_track_runs", []).append(
+        {"id": "kt_01", "status": "complete", "detect_run_id": "kd_01"}
+    )
+    recording_store.write_recording(recording.dir, data)
+    form = _LocationExportConfig()
+    form.on_recordings_changed([recording])
+    combo = form._keypoints.combo
+    assert combo.itemText(0) == NO_KEYPOINTS_TEXT and combo.currentIndex() == 0
+    assert "keypoint_track_spec" not in form.config()
+    assert combo.count() == 2, [combo.itemText(i) for i in range(combo.count())]
+    combo.setCurrentIndex(1)
+    spec = form.config()["keypoint_track_spec"]
+    # The settings, not an id: the run resolves them to this recording's own kt_01.
+    from detail.api import run_spec
+
+    data = recording_store.read_recording(recording.dir)
+    assert (
+        run_spec.resolve_spec_in_recording(data, "keypoint_track", spec, recording.dir)
+        == "kt_01"
+    )

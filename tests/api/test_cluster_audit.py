@@ -5,16 +5,20 @@ clip one question answered at the deepest level that is true, so a parent label 
 precision from the same judgments that score its sub-labels; the unlabelled remainder is never
 drawn. The storage arithmetic is `tests/storage/test_behavior_audit.py`; this is the run handle
 and the CLI that read it.
+
+The one-by-one draw and judge are gone (the review of every clip replaced them); a run audited
+before keeps what it bought, so these tests seed that earlier audit with `tests/audit_seed.py`
+and check what the readers make of it.
 """
 
-import inspect
-import json
+import re
 import time
 
 from click.testing import CliRunner
 
 from detail.cli import main
-from detail.storage import behavior_audit as audit
+
+from tests.audit_seed import draw, judge
 
 
 def _nested_artifact(run, n: int = 48) -> None:
@@ -63,17 +67,6 @@ def _nested_artifact(run, n: int = 48) -> None:
     )
 
 
-def test_a_label_scopes_the_draw_to_itself_and_what_nests_under_it(fitted_temporal):
-    """Auditing "rearing" draws from its own instances **and** "rearing/supported" — that is what
-    lets one batch score both levels — and nothing from a sibling or the remainder."""
-    experiment, run_id = fitted_temporal
-    run = experiment.authored_run(run_id)
-    _nested_artifact(run)
-
-    drawn = run.audit_sample(path="rearing", budget=40)
-    assert {row.label_path for row in drawn} == {"rearing", "rearing/supported"}
-
-
 def test_one_batch_scores_the_parent_and_the_child(fitted_temporal):
     """The point of answering at the deepest true level: "rearing, not supported" is a miss
     for the sub-label and a hit for the parent, from the same keystroke."""
@@ -81,8 +74,8 @@ def test_one_batch_scores_the_parent_and_the_child(fitted_temporal):
     run = experiment.authored_run(run_id)
     _nested_artifact(run)
 
-    for row in run.audit_sample(path="rearing/supported", budget=10):
-        run.label_audit(row.instance_id, False, answer="rearing")
+    for row in draw(run, path="rearing/supported", budget=10):
+        judge(run, row.instance_id, False, answer="rearing")
     child = run.audit_precision(path="rearing/supported")
     parent = run.audit_precision(path="rearing")
     assert child["n"] == 10 and child["precision"] == 0.0
@@ -136,8 +129,8 @@ def test_the_headline_counts_only_judgments_made_after_an_edit(fitted_temporal):
     """Choosing clusters by how they scored cannot raise the score the choice was made on."""
     experiment, run_id = fitted_temporal
     run, left, right = _two_clusters(experiment, run_id)
-    for row in run.audit_sample(path="climb", budget=12):
-        run.label_audit(row.instance_id, True)
+    for row in draw(run, path="climb", budget=12):
+        judge(run, row.instance_id, True)
     assert run.audit_precision(path="climb")["n"] > 0
     # The edit's stamp must fall after the judgments, which are to the second.
     time.sleep(1.1)
@@ -199,17 +192,20 @@ def _climb_bouts(run, left: int, right: int, monkeypatch, n: int = 40):
     return which
 
 
-def test_each_cluster_gets_clips_and_its_own_interval(fitted_temporal, monkeypatch):
-    """The draw reaches both clusters of the label, and each comes back with its own precision
-    and interval, size, share and what its clips were answered as — and no verdict: whether a
+def test_each_cluster_gets_its_own_interval(fitted_temporal, monkeypatch):
+    """Each cluster of the label an earlier audit judged comes back with its own precision and
+    interval, size, share and what its clips were answered as — and no verdict: whether a
     cluster is good enough is the reader's call."""
     experiment, run_id = fitted_temporal
     run, left, right = _two_clusters(experiment, run_id)
     which = _climb_bouts(run, left, right, monkeypatch)
-    drawn = run.audit_sample(path="climb", budget=16)
-    assert {which[r.instance_id] for r in drawn} == {left, right}
+    drawn = draw(run, path="climb", budget=16)
+    assert {which[r.instance_id] for r in drawn} == {
+        left,
+        right,
+    }, "the seeded audit judged one cluster; the per-cluster figures below are vacuous"
     for row in drawn:
-        run.label_audit(row.instance_id, which[row.instance_id] == left)
+        judge(run, row.instance_id, which[row.instance_id] == left)
     rows = {r["node"]: r for r in run.audit_by_cluster(path="climb")}
     assert set(rows) == {left, right}
     assert rows[left]["estimate"]["precision"] == 1.0
@@ -232,8 +228,8 @@ def test_the_cli_reports_each_clusters_interval_and_its_width(
     experiment, run_id = fitted_temporal
     run, left, right = _two_clusters(experiment, run_id)
     which = _climb_bouts(run, left, right, monkeypatch)
-    for row in run.audit_sample(path="climb", budget=16):
-        run.label_audit(row.instance_id, which[row.instance_id] == left)
+    for row in draw(run, path="climb", budget=16):
+        judge(run, row.instance_id, which[row.instance_id] == left)
     result = CliRunner().invoke(
         main,
         [
@@ -244,38 +240,43 @@ def test_the_cli_reports_each_clusters_interval_and_its_width(
     assert result.exit_code == 0, result.output
     assert f"#{left}" in result.output and f"#{right}" in result.output
     assert "95% CI" in result.output and "goal 0.50" in result.output
-    assert "25 more would give about" in result.output or "reached" in result.output
+    # The earlier audit's cluster rows ("N instances"), not the clip review's ("N clips").
+    cluster_lines = [
+        line
+        for line in result.output.splitlines()
+        if (f"#{left}" in line or f"#{right}" in line) and " instances, " in line
+    ]
+    assert len(cluster_lines) == 2, result.output
+    for line in cluster_lines:
+        assert re.search(r"\[CI width \d\.\d\d, goal 0\.50( reached)?\]$", line), line
+    assert (
+        "more would give" not in result.output
+    ), "the width note projects more one-by-one clips, which nothing can draw any more"
     for word in ("holds", "fails", "undecided"):
         assert word not in result.output, "the CLI gave a verdict"
-
-
-def test_a_cluster_is_audited_on_its_own(fitted_temporal, monkeypatch):
-    """A round asked of one cluster draws only that cluster's clips: what a reviewer gets by
-    choosing a cluster's row."""
-    experiment, run_id = fitted_temporal
-    run, left, right = _two_clusters(experiment, run_id)
-    which = _climb_bouts(run, left, right, monkeypatch)
-    drawn = run.audit_sample(path="climb", node=right)
-    assert len(drawn) == 20 and {which[r.instance_id] for r in drawn} == {right}
-    options = audit.answer_options("climb", run.audit_labels())
-    assert [text for text, _a, _m in options] == [
-        "climb",
-        "not climb",
-    ]
 
 
 def test_own_only_checks_the_parents_own_clusters_without_its_sub_labels(
     fitted_temporal,
 ):
-    """A parent's own clusters — its "other" — can be checked on their own: the draw and the
-    figure leave its sub-labels' instances out."""
+    """A parent's own clusters — its "other" — can be read on their own: the figure leaves its
+    sub-labels' judgments out, from an audit that judged both."""
     experiment, run_id = fitted_temporal
     run = experiment.authored_run(run_id)
     _nested_artifact(run)  # rearing / rearing/supported / grooming / unlabelled rows
-    drawn = run.audit_sample(path="rearing", own_only=True, budget=40)
-    assert drawn and {r.label_path for r in drawn} == {"rearing"}
-    whole = run.audit_sample(path="rearing", budget=40)
-    assert {r.label_path for r in whole} == {"rearing", "rearing/supported"}
+    whole = draw(run, path="rearing", budget=40)
+    own = [r for r in whole if r.label_path == "rearing"]
+    vacuous = "the seed judged no sub-label; this guards nothing"
+    assert own and len(own) < len(whole), vacuous
+    for row in whole:
+        judge(run, row.instance_id, True, answer=row.label_path)
+
+    assert run.audit_precision(path="rearing")["n"] == len(whole)
+    figure = run.audit_precision(path="rearing", own_only=True)
+    leaked = "the sub-label's judgments counted toward its parent's own"
+    assert figure["n"] == len(own), leaked
+    split = run.audit_precision_by_recording(path="rearing", own_only=True)
+    assert sum(row["n"] for row in split) == len(own)
 
 
 def test_an_edited_label_says_how_many_judgments_came_before(
@@ -294,8 +295,8 @@ def test_an_edited_label_says_how_many_judgments_came_before(
     monkeypatch.setattr(
         "detail.storage.behavior_audit.utc_timestamp", lambda: "2020-01-01T00:00:00Z"
     )
-    for row in run.audit_sample(path="climb/corner", budget=12):
-        run.label_audit(row.instance_id, True, answer="climb/corner")
+    for row in draw(run, path="climb/corner", budget=12):
+        judge(run, row.instance_id, True, answer="climb/corner")
     monkeypatch.undo()
     # An edit in climb's branch that leaves corner's clips as they were.
     run.name_nodes({other: "wall"})
@@ -326,9 +327,9 @@ def _nested_labels(run):
 
 
 def _audit_corner_as_corner(run) -> int:
-    drawn = run.audit_sample(path="climb/corner", budget=12)
+    drawn = draw(run, path="climb/corner", budget=12)
     for row in drawn:
-        run.label_audit(row.instance_id, True, answer="climb/corner")
+        judge(run, row.instance_id, True, answer="climb/corner")
     return len(drawn)
 
 
@@ -356,53 +357,6 @@ def test_renaming_the_sub_label_itself_keeps_its_answers(fitted_temporal):
     assert _audit_corner_as_corner(run)
     run.rename_label("L2", "front wall")
     assert run.audit_precision(path="climb/front wall")["precision"] == 1.0
-
-
-def test_a_label_edited_after_its_audit_can_be_audited_again(fitted_temporal):
-    """Judgments made before an edit are set aside, so those clips must be drawable again —
-    excluded for good, a fully audited label could never be audited further."""
-    experiment, run_id = fitted_temporal
-    run = experiment.authored_run(run_id)
-    left, inner = _nested_labels(run)
-    judged = set()
-    while drawn := run.audit_sample(path="climb", budget=50):
-        for row in drawn:
-            run.label_audit(row.instance_id, True)
-            judged.add(row.instance_id)
-    assert not run.audit_sample(path="climb"), "everything is audited"
-    other = run.node_view().children(left)[1]
-
-    # The edit's stamp must fall after the judgments, which are to the second.
-    time.sleep(1.1)
-    run.name_nodes(
-        {other: "ledge"}
-    )  # a new sub-label: climb is stamped, its frames unchanged
-    assert run.audit_precision(path="climb")["n"] == 0
-    redrawn = {row.instance_id for row in run.audit_sample(path="climb", budget=500)}
-    # The clips the edit re-cut are new instances, drawable anyway; the ones it left alone are
-    # what was stuck.
-    assert redrawn & judged, "no clip judged before the edit was offered again"
-
-
-def test_the_draw_is_recorded_with_every_argument(fitted_temporal):
-    """A hand-listed history entry drops whatever is added next: it once left out `node`, so a
-    one-cluster round read as a whole-label one."""
-
-    experiment, run_id = fitted_temporal
-    run = experiment.authored_run(run_id)
-    _nested_labels(run)
-
-    from detail.storage import temporal_runs
-
-    run.audit_sample(path="climb", budget=2)
-    lines = (run._run_dir() / temporal_runs.HISTORY_FILENAME).read_text(
-        encoding="utf-8-sig"
-    )
-    entry = [
-        e for e in map(json.loads, lines.splitlines()) if e["op"] == "audit_sample"
-    ][-1]
-    wanted = set(inspect.signature(run.audit_sample).parameters)
-    assert set(entry) - {"op", "at", "ts", "time"} >= wanted, entry
 
 
 def test_the_cli_reads_every_label_edit_before_writing_any(fitted_temporal):

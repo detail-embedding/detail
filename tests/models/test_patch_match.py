@@ -12,12 +12,13 @@ import pytest
 
 from detail.core.examples import ExampleFrame, ExampleMark, ExampleSet
 from detail.core.keypoints import InstanceFrame
-from detail.core.skeleton import PRESETS, Skeleton
+from detail.core.skeleton import Skeleton
 from detail.models.patch_match import decode as dc
 from detail.models.patch_match import view as vw
 from detail.models.patch_match.dinov3_match import DINOv3Match
+from tests.skeletons import OVERHEAD_12, SIDE_5
 
-SKELETON = PRESETS["quadruped_overhead_12"][1]
+SKELETON = OVERHEAD_12
 PLAN = dc.DecodePlan.from_skeleton(SKELETON)
 PATCH = 16
 G = 24  # grid cells; the view is the identity, so a cell is 16 px
@@ -265,7 +266,7 @@ def test_the_midline_is_the_longest_chain_through_unpaired_points():
         "tail_mid",
         "tail_tip",
     )
-    side = dc.DecodePlan.from_skeleton(PRESETS["quadruped_side_5"][1])
+    side = dc.DecodePlan.from_skeleton(SIDE_5)
     assert side.midline_path == ("nose", "mid_back", "tail_base")
     two = Skeleton(names=("a", "b"), edges=(("a", "b"),))
     assert dc.DecodePlan.from_skeleton(two).midline_path == ("a", "b")
@@ -278,7 +279,7 @@ def test_the_midline_is_the_longest_chain_through_unpaired_points():
 def test_a_pair_hangs_off_the_unpaired_point_both_members_join():
     assert PLAN.parents[("left_ear", "right_ear")] == ("neck_base", "nose", +1)
     assert PLAN.parents[("left_hip", "right_hip")] == ("tail_base", "mid_back", +1)
-    side = dc.DecodePlan.from_skeleton(PRESETS["quadruped_side_5"][1])
+    side = dc.DecodePlan.from_skeleton(SIDE_5)
     # the ears hang off the nose, the chain's start: the axis runs the other way, reversed
     assert side.parents == {("left_ear", "right_ear"): ("nose", "mid_back", -1)}
 

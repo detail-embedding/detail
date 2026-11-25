@@ -24,6 +24,7 @@ from detail.core.visualize import (
     draw_keypoints,
     rgb_to_bgr,
 )
+from detail.executor import rundir
 from detail.storage import recording as recording_store
 from detail.storage import video as video_store
 from detail.storage.zarr_io import DetectionPartReader, PartZarrReader
@@ -101,6 +102,15 @@ def export_keypoints_video(
         n_frames = source.frame_count(part_id)
         tracks = [t for t in source.series_ids() if part_id in source.series_parts(t)]
         overlay_rows = _tracking_overlay(source, part_id) if overlay else {}
+        # The overlay's masks decode at the size their detection run encoded them at (§9).
+        encoded = (
+            rundir.mask_resolution(
+                source.recording_dir / "detections" / source.detect.detection_run_id,
+                part_id,
+            )
+            if overlay
+            else None
+        )
         out_path = dest / f"{stem}_{part_id}_keypoints.mp4"
         emit(("drawing", index / len(parts), out_path.name), force=True)
         cap = cv2.VideoCapture(str(video_path))
@@ -121,7 +131,9 @@ def export_keypoints_video(
                         rgb,
                         [
                             Detection(
-                                mask=decode_mask(r["mask_rle"], (h, w)),
+                                mask=decode_mask(
+                                    r["mask_rle"], encoded or (h, w), out=(h, w)
+                                ),
                                 bbox=r["bbox"],
                                 class_name=r["class_name"],
                                 confidence=r["confidence"],

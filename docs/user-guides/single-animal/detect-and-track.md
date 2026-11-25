@@ -4,15 +4,15 @@
 called a **mask**. **Tracking** then joins those frame by frame into one animal followed
 through the whole video. Everything after this chapter works from the tracking.
 
-The way to detect, in DETAIL, is to **distill a fast detector**. SAM 3, the model you set up
-in [Configure DETAIL](../configure.md), finds animals from a few words, such as `mouse`, but
+The way to detect, in Detail, is to **distill a fast detector**. SAM 3, the model you set up
+in [Configure Detail](../configure.md), finds animals from a few words, such as `mouse`, but
 it is slow. So SAM 3 labels a few hundred frames, a small fast model learns from them, and
 that fast model detects every frame.
 
 ## The steps at a glance
 
 Each box is one step on this page. Click a box to go to that step. The first tag says where
-the step is in DETAIL. A **GPU** tag means the step's work runs on your computer's GPU.
+the step is in Detail. A **GPU** tag means the step's work runs on your computer's GPU.
 
 <div class="guide-flow" markdown>
 
@@ -200,7 +200,7 @@ high, above about 0.9.
     - **The best mAP50 stays low, under about 0.7:** the labels were poor. Go back to
       step 1, find a better prompt, and distill again.
     - **The run stops with an error during labelling:** SAM 3 is not set up. See
-      [Configure DETAIL](../configure.md#3-install-the-sam-3-backend).
+      [Configure Detail](../configure.md#3-install-the-sam-3-backend).
     - **The distill stopped partway** (an error, or your computer slept): open it from
       **Models** › **Distill runs** and click **Resume distill**. A finished labelling stage
       is kept, and a training that stopped carries on from its last checkpoint.
@@ -403,7 +403,7 @@ is outlined on every frame where it is inside the field of view.
       page. It runs only the recordings that did not finish, into the same run, and leaves
       the finished ones alone. Each one starts again from its beginning. This works the
       same for detection and tracking.
-    - **You closed DETAIL while a run was going:** the run carried on. Open the experiment
+    - **You closed Detail while a run was going:** the run carried on. Open the experiment
       again and the run's page shows where it stands.
     - **The animal is missing from stretches of the video:** it was outside the field of
       view, or the detector missed it there. Check the field of view covers everywhere the
@@ -411,10 +411,10 @@ is outlined on every frame where it is inside the field of view.
 
 ### Optional: save the tracks
 
-To take the tracking out of DETAIL, for your own analysis, open the tracking run's page and
+To take the tracking out of Detail, for your own analysis, open the tracking run's page and
 click **Export…**, at the top right. It writes this run's results to a folder you choose.
 
-1. **Save to:** click **Choose** and pick a folder. DETAIL makes a new folder inside it for
+1. **Save to:** click **Choose** and pick a folder. Detail makes a new folder inside it for
    this export, named under **Creates**, so one export never overwrites another.
 2. Tick **Tracks**, the animal's position on every frame. (The animal's outlines, **Masks**,
    are exported the same way from the detection run's page.)

@@ -315,6 +315,33 @@ def _claim(target: QWidget, key: str | None) -> Callable[[], bool]:
     return lambda: _latest.get(target, {}).get(key) is token
 
 
+# The running `run_progress` worker per (target, key), so the call that supersedes it can stop it.
+_running: "weakref.WeakKeyDictionary[QWidget, dict[str, StageProgressWorker]]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _cancel_superseded(
+    target: QWidget, key: str | None, worker: StageProgressWorker
+) -> None:
+    """Stop the reporting call ``worker`` supersedes, at its next report, and take its place.
+
+    Dropping a superseded result is not enough when the work is long: each superseded call
+    still ran to its end, so a run of quick changes cost the work of every change, not of the
+    last one, and the newest waited behind them all. Ticking recordings off one by one on a
+    location plot queued a 2–8 s redraw per tick, and the picture stopped answering
+    (``tests/gui/test_busy.py``, class 4). A ``run_busy`` call reports nothing, so it cannot
+    be stopped this way; its result is only dropped.
+    """
+    if key is None:
+        return
+    running = _running.setdefault(target, {})
+    older = running.get(key)
+    if older is not None and alive(older) and older.isRunning():
+        older.request_cancel()
+    running[key] = worker
+
+
 def run_busy(
     target: QWidget,
     fn: Callable[[], object],
@@ -413,7 +440,9 @@ def run_progress(
 
     ``work(emit)`` runs off the UI thread and calls ``emit(stage, fraction, detail)``
     as it progresses; the overlay renders a real bar. Same delivery/teardown contract,
-    ``supersedes`` included.
+    ``supersedes`` included — and a call that supersedes this one also **stops** it, at its
+    next ``emit``, so work passed with ``supersedes`` must leave nothing half-written when
+    stopped there, exactly as cancellable work must.
 
     ``on_cancel`` makes the work **cancellable**: the overlay offers Cancel, and the work
     stops at its next ``emit`` (which raises ``core.progress.OperationCancelled``); then
@@ -428,6 +457,7 @@ def run_progress(
     worker = StageProgressWorker(work, receiver=target)
     _active.add(worker)
     current = _claim(target, supersedes)
+    _cancel_superseded(target, supersedes, worker)
     if on_cancel is not None:
         overlay.offer_cancel(worker.request_cancel)
         _cancel_with_window(target, worker)

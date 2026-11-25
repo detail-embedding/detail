@@ -76,9 +76,11 @@ detail/
 ├── configs/              # one pydantic model per module — the single source for each
 │   │                     # parameter's type, bounds, default, help, label (§6.5)
 │   ├── detection.py, tracking.py, embedding.py, labeling.py, training.py, distill.py,
-│   │   quick_segment.py, location_export.py, query.py, query_eval.py, comparison.py,
+│   │   quick_segment.py, location_export.py, query.py, comparison.py,
 │   │   temporal_clustering.py         # a module's (or tool's) run config
 │   ├── keypoint_detect.py, keypoint_track.py  # §26 (+ the flat method models)
+│   ├── location_plots.py # LocationPlotView: how a location export is drawn (a view model, like
+│   │                     # display.py; its fields are the Plots view's controls and the CLI's flags)
 │   ├── keypoint_dataset.py  # the label stage of a keypoint distill (§12 *Distill keypoints*)
 │   ├── query_soft_knn.py, temporal_codebook.py, temporal_dtw_finch.py  # a registry method's own
 │   │                     # parameters (the method's half of the config)
@@ -150,7 +152,7 @@ detail/
 │   ├── manifest.py, labels_manifest.py  # §3 bulk-import bundle manifest; behavior-label batch manifest
 │   ├── credentials.py    # credential resolution and storage (§1, Tenet 14)
 │   ├── integrity.py, video_integrity.py  # §2 file fingerprints; the referenced-video pre-run gate
-│   └── location_export.py, clip_query_csv.py, query_eval_csv.py  # result CSV writers/readers (§16)
+│   └── location_export.py, clip_query_csv.py  # result CSV writers/readers (§16)
 ├── executor/
 │   ├── base.py           # Executor protocol, JobStatus
 │   ├── runners.py        # JOB_RUNNERS + ProcessingModule/PROCESSING_MODULES (§6.5) + AnalysisModule/ANALYSIS_MODULES (§16) + job_params
@@ -190,8 +192,8 @@ detail/
 │   │                     # union + mask OR every keypoint stage reads), and the example-frame
 │   │                     # samplers (varied / spread)
 │   ├── location_analysis.py    # LocationExportModule — the first AnalysisModule (§16)
-│   └── query.py, query_eval.py, temporal_clustering.py,
-│       behavior_artifact.py    # §20, §16, §22; and what every §19 artifact producer writes
+│   └── query.py, temporal_clustering.py,
+│       behavior_artifact.py    # §20, §22; and what every §19 artifact producer writes
 │                               # besides its instances
 ├── analysis/             # pure, synchronous compute — no executor, no Qt:
 │                         # keypoint_filters.py: §26 despike / smooth and the candidate path (viterbi);
@@ -200,18 +202,20 @@ detail/
 │                         # node_cache.py: §22's leaf-additive tables (LeafTables, leaf runs and
 │                         # their positions, member_positions) — pure, no I/O;
 │                         # metrics: cluster_metrics, retrieval, descriptors, descriptor_ranking,
-│                         # measures (§23) over windows.py, query_eval (retrieval scoring),
+│                         # measures (§23) over windows.py,
 │                         # behavior_labels (ground truth as a per-frame sequence);
 │                         # segmentation + dynamics + tw_finch, decode.py (§22 temporal decode),
 │                         # _dtw_numba.py / _decode_numba.py (the compiled kernels);
-│                         # clip_query.py (retrieval over pose-embedding trajectories, read by
-│                         # query_eval);
+│                         # clip_query.py (trajectory continuity: runs, spans, gaps — read by
+│                         # Query, temporal clustering and measures);
 │                         # §24: cohort, compare, node_measures, comparison_report, provenance;
 │                         # geometry.py / positions.py (where a subject or an instance was);
 │                         # bout_segmentation.py (detector params, segment_recording, pool_recordings,
 │                         # bout_medoid_distance — the bout steps temporal clustering uses);
 │                         # locations.py (compute_location_tables — per-track ROI/POI features);
-│                         # metrics_docs.py / query_methods_docs.py (single sources for two doc pages)
+│                         # location_measures.py (a comparison's locations source, and the one
+│                         # path rule: smoothed_segments / path_breaks); location_plots.py (a
+│                         # location export's paths, occupancy, speed and body as a PlotSpec)
 ├── cluster_methods/      # TemporalClusterMethod implementations: dtw_finch, codebook_viterbi;
 │                         # _common.py the steps they share (kmeans_level, blas_safe_openmp).
 │                         # POSE_CLUSTER_METHODS is empty since pose clustering was removed
@@ -220,7 +224,10 @@ detail/
 ├── report/               # figure + table rendering shared by the analysis reports; style.py is
 │                         # the matplotlib adapter for core/chart_theme.py, figures.py the primitives,
 │                         # tables.py the CSV writers, behavior_figures.py a §19 artifact's figures,
-│                         # exporter.py what a re-export may delete (only what it wrote last time)
+│                         # exporter.py what a re-export may delete (only what it wrote last time),
+│                         # plot_spec.py a figure as plain data, plot_render.py its matplotlib
+│                         # renderer and plot_html.py its plotly (interactive HTML) twin — the
+│                         # location plots draw through all three
 ├── models/
 │   ├── hf_access.py      # HFHubModel mixin + cache-first readiness
 │   ├── _ultralytics.py   # the sole seam allowed to import ultralytics (YOLO_OFFLINE lives here);
@@ -266,7 +273,9 @@ detail/
 │   ├── keypoint_export.py   # §26: PointSource (one reader of a keypoint run for export: cut-off,
 │   │                     # source, blanking) + the long-CSV, DeepLabCut, SLEAP and NWB writers
 │   ├── keypoints_video.py   # §26 (#689): the footage with the points drawn on, one sequential pass per part
-│   ├── run_preview.py    # Detection/Tracking/InputImage/Embedding/Stream/ClipQuery/QueryEval
+│   ├── location_plots.py    # §16: LocationPlots, Experiment.location_plots(run_id) — the read boundary
+│   │                     # the CLI's `locations plot` and the GUI's Plots view draw through
+│   ├── run_preview.py    # Detection/Tracking/InputImage/Embedding/Stream/ClipQuery
 │   │                     # preview accessors + pca_project_2d
 │   ├── previews.py       # §3 preview build (proxy + masks), missing checks, PreviewReader (tiles)
 │   ├── models.py         # experiment-free machine-global model catalog (§5; Experiment delegates here)
@@ -411,10 +420,11 @@ detail/
     ├── training_curve.py # mAP50 per epoch, and the best score so far
     ├── snapshots.py      # §21 pinned artifacts on screen
     ├── comparison.py     # §24: the comparisons list page, launch dialog and saved result
-    ├── audit_tab.py      # §19 reliability audit on screen: blind review, and its precision
+    ├── query_review.py   # a query run's AUDIT: every clip a cutoff keeps, one recording at a time
+    ├── review_marks.py   # AUDIT's ordered writes, marks not yet read back, undo (both run kinds)
     ├── behavior_query.py # §16/§20 clip surfaces shared across the GUI: the example-clip picker
     │                     # and the clip player (_ClipPlayer)
-    ├── clip_grid.py      # a strip of clip thumbnails that fills progressively (§20)
+    ├── clip_grid.py      # one thumbnail's pool decode (cluster_strip's) and score_digits
     ├── quick_preview.py  # the small player a strip puts in a thumbnail's place
     ├── example_spread.py # how a behavior's example clips spread over the cohort (beside Mark examples)
     ├── measurements.py   # what a cluster or a behavior *is*, as numbers — one band for both result pages
@@ -481,7 +491,8 @@ detail/
     │                     # (registry.py: ImporterUI + ConfigBand; csv_columns.py; selection.py)
     ├── modules/          # per-module config + result UIs, keyed by module_id: detection.py,
     │                     # tracking.py, embedding.py, keypoint_detect.py and keypoint_track.py
-    │                     # (§26), analysis_location.py, analysis_query.py, analysis_query_eval.py,
+    │                     # (§26), analysis_location.py (+ ../location_plots.py, its Plots view),
+    │                     # analysis_query.py,
     │                     # analysis_temporal_clustering.py; registry.py also re-exports the
     │                     # result-view protocol; _common.py the upstream-run pickers, _every_n.py
     │                     # the "Use every N frames" row, _heading.py the one heading picker (§14 —

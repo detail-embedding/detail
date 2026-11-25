@@ -313,7 +313,7 @@ def test_the_source_scans_reach_the_real_package():
 
 
 def test_dropping_the_declared_exception_fails_the_modal_rule(monkeypatch):
-    """And the sharper half: the rule must fail on the real package when its one exception goes.
+    """And the sharper half: the rule must fail on the real package when its exceptions go.
 
     A counterexample proves a rule can reject *something* — a synthesized one-file package. This
     proves it rejects something **in this app**, which is the claim that matters and the one a
@@ -322,10 +322,10 @@ def test_dropping_the_declared_exception_fails_the_modal_rule(monkeypatch):
     """
     package = pathlib.Path(reqs.__file__).parent
     rule = next(r for r in reqs.REQUIREMENTS if r.name == "a_dialog_opens_modally")
-    rule.check(package)  # green with the exception declared
+    rule.check(package)  # green with the exceptions declared
 
     monkeypatch.setattr(reqs, "_NON_MODAL_DIALOGS", {})
-    with pytest.raises(AssertionError, match="analysis_query_eval"):
+    with pytest.raises(AssertionError, match="clip_popup"):
         rule.check(package)
 
 
@@ -612,7 +612,7 @@ def test_the_split_rule_passes_a_split_that_remembers_itself(tmp_path, body):
 @pytest.mark.parametrize(
     "body",
     [
-        # the query-eval Rank column
+        # a Rank column (the removed query-eval explorer's spelling)
         'def build(rank):\n    return QStandardItem("" if rank is None else str(rank))\n',
         # the per-fold counts: `str(x)` inside a comprehension over numbers
         "def build(f):\n"
@@ -688,3 +688,47 @@ def test_the_checklist_rule_passes_a_tick_read_from_a_signal(tmp_path):
         "guides=False)\n",
     )
     assert reqs._literal_done_steps(package) == []
+
+
+# --- `an_identity_swatch_is_never_colour_alone` ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # BROWSE's two keys, as they were: the identity colour straight into the role
+        "def build(item, slot):\n"
+        "    item.setData(0, Qt.ItemDataRole.DecorationRole, plot_theme.label_identity(slot))\n",
+        "def build(item, slot):\n"
+        "    item.setData(plot_theme.label_identity(slot), Qt.ItemDataRole.DecorationRole)\n",
+        # the example dialog's spelling
+        "def build(item, c):\n    item.setData(QColor(c), Qt.ItemDataRole.DecorationRole)\n",
+        # a flat pixmap handed over as an icon, the label menu's and the arena list's spelling
+        "def build(item, colour):\n    item.setIcon(swatch_of(colour))\n",
+        "def build(menu, pixmap, name):\n    menu.addAction(QIcon(pixmap), name)\n",
+    ],
+)
+def test_the_swatch_rule_would_catch_a_colour_only_decoration(tmp_path, body):
+    offenders, _excused = reqs._decorations_without_a_pattern(_one_file(tmp_path, body))
+    assert offenders == ["page.py:build (line 2)"]
+
+
+def test_the_swatch_rule_passes_a_patterned_swatch(tmp_path):
+    package = _one_file(
+        tmp_path,
+        "def build(items, slots):\n"
+        "    swatches = {s: plot_theme.label_swatch(s) for s in slots}\n"
+        "    for item, slot in zip(items, slots):\n"
+        "        item.setData(swatches[slot], Qt.ItemDataRole.DecorationRole)\n",
+    )
+    assert reqs._decorations_without_a_pattern(package) == ([], set())
+
+
+def test_every_colour_only_swatch_exemption_still_excuses_a_site():
+    """A `_COLOUR_ONLY_SWATCHES` key that matches no decoration is an excuse for a swatch that
+    is gone — or one that is patterned now, whose entry should have left with the fix.
+    """
+    _offenders, excused = reqs._decorations_without_a_pattern(
+        pathlib.Path(gui_pages.__file__).parent
+    )
+    assert excused == set(reqs._COLOUR_ONLY_SWATCHES)

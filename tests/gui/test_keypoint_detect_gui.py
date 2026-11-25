@@ -105,7 +105,7 @@ def test_the_example_set_comes_from_the_shared_picker_once_an_experiment_is_set(
     from detail.api.experiment import Experiment
 
     proj = Experiment.create("p", tmp_path)
-    created = proj.create_example_set("dots", "quadruped_side_5")
+    created = proj.create_example_set("dots", "midline_2")
     form.show()
     form.on_experiment_set(proj)
     picker = form._example_picker

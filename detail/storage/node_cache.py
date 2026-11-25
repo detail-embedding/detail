@@ -156,8 +156,8 @@ def write_node_cache(run_dir: Path | str, cache: NodeCache) -> Path:
     return path
 
 
-def read_node_cache(run_dir: Path | str) -> NodeCache:
-    """Read the whole cache into memory.
+def _open_cache(run_dir: Path | str):
+    """The cache's root group, read-only, refused when absent or of another schema.
 
     Raises:
         FileNotFoundError: the run has no node cache (it predates §22's, or its build failed).
@@ -173,6 +173,28 @@ def read_node_cache(run_dir: Path | str) -> NodeCache:
             f"node cache at {path} has schema_version {version!r}; this build reads "
             f"{SCHEMA_VERSION}. Rebuild the node cache."
         )
+    return root
+
+
+def read_recording_ids(run_dir: Path | str) -> tuple[str, ...]:
+    """The recordings the cache was built over, without reading its tables.
+
+    Raises:
+        FileNotFoundError: the run has no node cache.
+        ValueError: the store was written under another schema version.
+    """
+    root = _open_cache(run_dir)
+    return tuple(str(v) for v in np.asarray(root["recording_ids"][:]))
+
+
+def read_node_cache(run_dir: Path | str) -> NodeCache:
+    """Read the whole cache into memory.
+
+    Raises:
+        FileNotFoundError: the run has no node cache (it predates §22's, or its build failed).
+        ValueError: the store was written under another schema version.
+    """
+    root = _open_cache(run_dir)
 
     def read(name: str) -> np.ndarray:
         return np.asarray(root[name][:])

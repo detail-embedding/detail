@@ -330,43 +330,6 @@ def load_track_trajectory(
     return np.concatenate(embs), np.concatenate(frames), np.concatenate(times)
 
 
-class LazyTrajectories:
-    """A subject → ``(emb, frame_idx, t_ns)`` mapping that loads each subject's trajectory
-    from disk **on access**, so only one full trajectory is resident at a time.
-
-    Preloading every searched subject (the previous behavior) holds all of them in memory at
-    once — on a large run (many/long recordings, high-dim embeddings) that is gigabytes and OOMs
-    the iteration subprocess. ``query_tracks`` touches each subject once per phase, releasing
-    it before the next, so a plain lazy load streams the search. It is a drop-in ``Mapping``
-    (``__contains__`` + ``__getitem__``), so the pure matcher and its tests are unchanged. No
-    caching: repeated loads only matter once the example set grows large, which is a separate
-    (deferred) concern."""
-
-    def __init__(self, experiment_root: Path, embed_run_id: str) -> None:
-        self._experiment_root = experiment_root
-        self._embed_run_id = embed_run_id
-
-    def _track_dir(self, subject: tuple[str, int]) -> Path:
-        sid, tid = subject
-        return (
-            experiment_store.recording_path(self._experiment_root, sid)
-            / "embeddings"
-            / self._embed_run_id
-            / f"track_{tid}"
-        )
-
-    def __contains__(self, subject: tuple[str, int]) -> bool:
-        return self._track_dir(subject).is_dir()
-
-    def __getitem__(self, subject: tuple[str, int]):
-        sid, tid = subject
-        return load_track_trajectory(
-            experiment_store.recording_path(self._experiment_root, sid),
-            self._embed_run_id,
-            tid,
-        )
-
-
 def load_track_timeline(
     recording_dir: Path | str, embed_run_id: str, track_id: int
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -545,10 +508,16 @@ def _build_part(
     For a caller that needs one part (a preview's mask build): building every part resolved
     every part's video, so one part whose video is not on this machine failed a build of
     another, and re-parsed every part's timestamp CSV per call. ``timestamps`` is the part's
-    map when the caller already holds it (``load_active_timestamps_cached``)."""
+    map when the caller already holds it (``load_active_timestamps_cached``).
+
+    ``mask_hw`` is the size the part's mask RLEs were encoded at, which every decode of them
+    passes as their size; the footage a mask is drawn on can decode at another (§9)."""
+    from detail.executor import rundir
+
     file = recording_store.video_files(data)[part_index]
     stem = recording_store.part_stem(file)
-    zarr_path = recording_dir / "detections" / detection_run_id / f"{stem}.zarr"
+    detection_dir = recording_dir / "detections" / detection_run_id
+    zarr_path = detection_dir / f"{stem}.zarr"
     reader = DetectionPartReader(zarr_path) if zarr_path.exists() else None
     frame_idx = (
         reader.column("frame_idx")[:]
@@ -575,6 +544,7 @@ def _build_part(
         "timestamps": timestamps,
         "assignment": assignment,
         "every_n_frames": max(1, int(every_n_frames or 1)),
+        "mask_hw": rundir.mask_resolution(detection_dir, stem),
     }
 
 
@@ -766,7 +736,11 @@ class DetectionPreview:
             detections.append(
                 Detection(
                     mask=(
-                        decode_mask(str(mask_rle[j]), mask_size)
+                        decode_mask(
+                            str(mask_rle[j]),
+                            part.get("mask_hw") or mask_size,
+                            out=mask_size,
+                        )
                         if mask_size is not None
                         else None
                     ),
@@ -810,7 +784,7 @@ class DetectionPreview:
             counts = str(rows["mask_rle"][j])
             if not counts:
                 continue
-            mask = decode_mask(counts, size)
+            mask = decode_mask(counts, part.get("mask_hw") or size, out=size)
             union[frame] = (union[frame] | mask) if frame in union else mask
         return union
 
@@ -2344,82 +2318,3 @@ class ClipQueryPreview:
                     alpha=alpha,
                 )
             offset += hi - lo + 1
-
-
-class QueryEvalPreview:
-    """Experiment-level read boundary for the behavior-query eval (§16) — the API seam the
-    GUI reads through (Tenet 2). Reads a completed run's metrics + per-clip detail
-    (predictions / ground truth) + PR-curve points from ``analysis/<run_id>/``; the
-    compute lives in ``pipeline/query_eval``. The scrub-frame panel reuses
-    ``ClipQueryPreview.frame_view`` (same embed-run silhouette seam)."""
-
-    def __init__(self, experiment_dir: Path | str) -> None:
-        self._dir = Path(experiment_dir)
-
-    def read_metrics(self, run_id: str):
-        """The per-behavior ``MetricRow``s of a completed run."""
-        from detail.storage import analysis_runs as analysis_store
-        from detail.storage import query_eval_csv
-
-        return query_eval_csv.read_metrics_csv(
-            analysis_store.analysis_dir(self._dir, run_id) / "metrics.csv"
-        )
-
-    def read_predictions(self, run_id: str, behavior: str | None = None):
-        """Ranked prediction outcomes (``PredictionRow``s), optionally one behavior."""
-        from detail.storage import analysis_runs as analysis_store
-        from detail.storage import query_eval_csv
-
-        rows = query_eval_csv.read_predictions_csv(
-            analysis_store.analysis_dir(self._dir, run_id) / "predictions.csv"
-        )
-        return [r for r in rows if behavior is None or r.behavior == behavior]
-
-    def read_ground_truth(self, run_id: str, behavior: str | None = None):
-        """Ground-truth outcomes (``GroundTruthRow``s), optionally one behavior."""
-        from detail.storage import analysis_runs as analysis_store
-        from detail.storage import query_eval_csv
-
-        rows = query_eval_csv.read_ground_truth_csv(
-            analysis_store.analysis_dir(self._dir, run_id) / "ground_truth.csv"
-        )
-        return [r for r in rows if behavior is None or r.behavior == behavior]
-
-    def read_pr(
-        self, run_id: str, behavior: str
-    ) -> dict[int, list[tuple[float, float]]]:
-        """Per-fold ``(recall, precision)`` PR-curve points for one behavior, keyed by
-        fold index (``pr/<behavior>/fold_NN.csv``). Empty if the behavior was skipped.
-        """
-        from detail.storage import analysis_runs as analysis_store
-        from detail.storage import query_eval_csv
-
-        pr_dir = analysis_store.analysis_dir(self._dir, run_id) / "pr" / behavior
-        if not pr_dir.is_dir():
-            return {}
-        return {
-            int(f.stem.split("_")[1]): query_eval_csv.read_pr_points(f)
-            for f in sorted(pr_dir.glob("fold_*.csv"))
-        }
-
-    def read_folds(self, run_id: str, behavior: str | None = None):
-        """Per-fold ``FoldMetricRow``s of a completed run, optionally one behavior."""
-        from detail.storage import analysis_runs as analysis_store
-        from detail.storage import query_eval_csv
-
-        rows = query_eval_csv.read_folds_csv(
-            analysis_store.analysis_dir(self._dir, run_id) / "folds.csv"
-        )
-        return [r for r in rows if behavior is None or r.behavior == behavior]
-
-    def read_overlap(self, run_id: str, behavior: str | None = None):
-        """Per-overlap-level ``OverlapRow``s (each score beside its null) of a completed
-        run, optionally one behavior. Raises ``FileNotFoundError`` for a run recorded
-        before the nulls existed."""
-        from detail.storage import analysis_runs as analysis_store
-        from detail.storage import query_eval_csv
-
-        rows = query_eval_csv.read_overlap_csv(
-            analysis_store.analysis_dir(self._dir, run_id) / "overlap.csv"
-        )
-        return [r for r in rows if behavior is None or r.behavior == behavior]

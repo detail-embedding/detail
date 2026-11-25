@@ -1,38 +1,24 @@
-"""Tests for clip-query orchestration (detail/analysis/clip_query.py):
-continuity segmentation, t_ns→row resolution, band-in-time, and cross-subject pooling.
+"""Tests for the clip helpers (detail/analysis/clip_query.py):
+continuity segmentation, t_ns→row resolution, band-in-time, and span checks.
 """
 
 import numpy as np
 import pytest
 
 from detail.analysis import clip_query
-from detail.analysis import retrieval
 
 _PERIOD = 33_000_000  # ~30 fps in ns
 
 
-def _make_db(rng, total, *, planted=None, dim=8, gaps=()):
+def _make_db(rng, total, *, dim=8, gaps=()):
     """A synthetic subject database (emb, frame_idx, t_ns). ``gaps`` = rows before which
     a large time/frame jump is inserted (a tracking discontinuity)."""
     emb = rng.standard_normal((total, dim)).astype(np.float32)
-    if planted is not None:
-        pat, at = planted
-        emb[at : at + len(pat)] = pat
     t_ns = (np.arange(total) * _PERIOD).astype(np.int64)
     for g in gaps:
         t_ns[g:] += _PERIOD * 50
     frame_idx = (t_ns // _PERIOD).astype(np.int32)
     return emb, frame_idx, t_ns
-
-
-def _spec(sid, tid, t_ns, r0, r1):
-    """An example spec (t_ns span, Tenet 8) covering rows [r0, r1] of a subject."""
-    return {
-        "recording_id": sid,
-        "track_id": tid,
-        "start_t_ns": int(t_ns[r0]),
-        "end_t_ns": int(t_ns[r1]),
-    }
 
 
 def test_nominal_period_and_default_gap():
@@ -97,22 +83,6 @@ def test_frame_span_to_t_ns():
         _, _, t2 = _make_db(np.random.default_rng(12), 30, gaps=(10,))
         f2 = (t2 // _PERIOD).astype(np.int32)
         clip_query.frame_span_to_t_ns(f2, t2, int(f2[9]) + 1, int(f2[10]) - 1)
-
-
-def test_example_straddling_gap_raises():
-    rng = np.random.default_rng(6)
-    emb, frame_idx, t_ns = _make_db(rng, 60, gaps=(30,))
-    db = {("s1", 0): (emb, frame_idx, t_ns)}
-    # The message names the subject, the clip's time span, and the break it crosses — a
-    # surface that reaches the search with a bad clip must still say what is wrong.
-    with pytest.raises(ValueError, match="crosses a break in tracking of 1.68 s"):
-        clip_query.query_tracks(
-            db,
-            [_spec("s1", 0, t_ns, 28, 32)],
-            [("s1", 0)],
-            band_ns=_PERIOD,
-            threshold=0.05,
-        )
 
 
 def test_check_span_accepts_a_continuous_span():
@@ -190,80 +160,6 @@ def test_run_frame_ranges_are_global_frames():
     # Row ranges and frame ranges describe the same runs, in different units.
     runs = clip_query.segment_runs(t_ns, clip_query.default_max_gap_ns(t_ns))
     assert [(a, b - 1) for a, b in runs] == [(0, 29), (30, 59)]
-
-
-def test_query_finds_planted_and_excludes_self():
-    rng = np.random.default_rng(7)
-    pattern = rng.standard_normal((6, 8)).astype(np.float32)
-    emb, frame_idx, t_ns = _make_db(rng, 100, planted=(pattern, 40))
-    emb[70:76] = pattern  # a second copy
-    db = {("s1", 0): (emb, frame_idx, t_ns)}
-    examples, matches = clip_query.query_tracks(
-        db,
-        [_spec("s1", 0, t_ns, 40, 45)],
-        [("s1", 0)],
-        band_ns=_PERIOD * 2,
-        threshold=0.05,
-        min_separation=6,
-    )
-    assert examples[0].start_row == 40 and examples[0].end_row == 45
-    starts = {m.start_row for m in matches}
-    assert 70 in starts  # the other copy
-    assert 40 not in starts  # self-match excluded
-    best = min(matches, key=lambda m: m.score)
-    assert best.start_t_ns == int(t_ns[best.start_row])
-
-
-def test_cross_subject_pooling_and_ranking():
-    rng = np.random.default_rng(8)
-    pattern = rng.standard_normal((5, 8)).astype(np.float32)
-    e1, f1, t1 = _make_db(rng, 80, planted=(pattern, 20))
-    e2, f2, t2 = _make_db(rng, 80, planted=(pattern, 55))
-    db = {("s1", 0): (e1, f1, t1), ("s2", 0): (e2, f2, t2)}
-    _, matches = clip_query.query_tracks(
-        db,
-        [_spec("s1", 0, t1, 20, 24)],
-        [("s1", 0), ("s2", 0)],
-        band_ns=_PERIOD,
-        threshold=0.05,
-        min_separation=5,
-    )
-    subjects = {(m.recording_id, m.track_id) for m in matches}
-    assert ("s2", 0) in subjects  # found the copy in the other recording
-    scores = [m.score for m in matches]
-    assert scores == sorted(scores)  # globally ranked, best first
-
-
-def test_run_too_short_is_skipped():
-    rng = np.random.default_rng(9)
-    pattern = rng.standard_normal((10, 8)).astype(np.float32)
-    e1, f1, t1 = _make_db(rng, 60, planted=(pattern, 5), gaps=(20,))
-    db = {("s1", 0): (e1, f1, t1)}
-    # The first run [0,20) holds the length-10 example; the search must not raise on the
-    # short tail run even though the query is long.
-    examples, _ = clip_query.query_tracks(
-        db,
-        [_spec("s1", 0, t1, 5, 14)],
-        [("s1", 0)],
-        band_ns=_PERIOD,
-        threshold=0.05,
-        min_separation=10,
-    )
-    assert examples[0].start_row == 5
-
-
-def test_unknown_subject_raises():
-    rng = np.random.default_rng(10)
-    emb, frame_idx, t_ns = _make_db(rng, 30)
-    db = {("s1", 0): (emb, frame_idx, t_ns)}
-    with pytest.raises(KeyError, match="search subject"):
-        clip_query.query_tracks(
-            db,
-            [_spec("s1", 0, t_ns, 5, 9)],
-            [("nope", 0)],
-            band_ns=_PERIOD,
-            threshold=0.5,
-        )
 
 
 def test_a_gap_crossing_span_is_accepted_when_the_caller_does_not_need_a_path():

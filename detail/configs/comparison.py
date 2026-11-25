@@ -2,8 +2,10 @@
 
 A comparison filters recordings, groups them by columns of ``metadata.csv`` (§11), and summarizes
 §23 measures over one §19 behavior artifact — or, with ``source: nodes``, over every candidate
-node of a clustering run's node cache (§24 *The node source*). Descriptive only: no tests, no
-corrections, no models (§24) — the tidy ``stats.csv`` is the handoff to a mixed model elsewhere.
+node of a clustering run's node cache (§24 *The node source*), or, with ``source: locations``,
+how far and how fast each animal moved and the shape of its body, read from a location-export
+run (§24 *The locations source*). Basic group comparison only: no models (§24) — the tidy
+``stats.csv`` is the handoff to a mixed model elsewhere.
 
 **There is no ``design`` field.** The design — between units, paired within them, or a trend —
 is resolved from what the chosen column does within the unit when the comparison runs
@@ -34,11 +36,14 @@ class ComparisonConfig(BaseModel):
         "current node cache and takes no snapshot.",
         json_schema_extra={"scope": "selection", "label": "Source snapshot"},
     )
-    source: Literal["labels", "nodes"] = Field(
+    source: Literal["labels", "nodes", "locations"] = Field(
         "labels",
-        description="What is measured: the run's labelled behaviors (its §19 artifact), or every "
+        description="What is measured: the run's labelled behaviors (its §19 artifact); every "
         "candidate node of a clustering run's node cache, labelled or not: the difference screen "
-        "over clusters nobody has named yet. Nodes need a clustering run with a current node cache.",
+        "over clusters nobody has named yet; or locations: distance travelled, time moving, "
+        "speed and body shape, read from a location-export run. Nodes need a clustering run "
+        "with a current node cache. Locations need a location-export run that measured the "
+        "body, on calibrated recordings.",
         json_schema_extra={"label": "Measure"},
     )
     group_by: list[str] = Field(
@@ -150,6 +155,56 @@ class ComparisonConfig(BaseModel):
         "either way. A between design has no per-unit effects and ranks on the effect.",
         json_schema_extra={"advanced": True, "label": "Rank on"},
     )
+    location_sample_fps: float | None = Field(
+        5.0,
+        gt=0.0,
+        description="Locations source: rows per second read for each animal. The run's rows "
+        "are thinned to at most this many a second before anything is measured, so runs "
+        "exported at different rates are measured alike. A run exported at a lower rate is "
+        "read as it is. Unset reads every row.",
+        json_schema_extra={
+            "advanced": "Locations",
+            "label": "Rows per second read",
+            "ui_max": 240.0,
+        },
+    )
+    location_smooth_s: float = Field(
+        1.0,
+        gt=0.0,
+        description="Locations source: seconds the body's position is averaged over before "
+        "distance and speed are measured. Without it, frame-to-frame jitter adds distance "
+        "for an animal standing still.",
+        json_schema_extra={
+            "advanced": "Locations",
+            "label": "Path smoothing (s)",
+            "unit": "s",
+            "ui_max": 60.0,
+        },
+    )
+    location_moving_threshold: float = Field(
+        2.0,
+        ge=0.0,
+        description="Locations source: speed on the smoothed path, in centimetres per second, "
+        "above which an animal counts as moving.",
+        json_schema_extra={
+            "advanced": "Locations",
+            "label": "Moving above (cm/s)",
+            "ui_max": 1000.0,
+        },
+    )
+    location_jump_speed: float = Field(
+        7.5,
+        gt=0.0,
+        description="Locations source: a raw step faster than this many of the animal's own "
+        "body lengths per second is a tracking jump, not movement. The path is broken there "
+        "rather than joined, so the jump adds no distance. 7.5 is one and a half body "
+        "lengths in a fifth of a second.",
+        json_schema_extra={
+            "advanced": "Locations",
+            "label": "Jump above (body lengths/s)",
+            "ui_max": 1000.0,
+        },
+    )
 
     @model_validator(mode="after")
     def _check_disjoint(self) -> "ComparisonConfig":
@@ -208,4 +263,8 @@ class ComparisonConfig(BaseModel):
             "candidate_floor_s": self.candidate_floor_s,
             "suppress_nesting": self.suppress_nesting,
             "statistic": self.statistic,
+            "location_sample_fps": self.location_sample_fps,
+            "location_smooth_s": self.location_smooth_s,
+            "location_moving_threshold": self.location_moving_threshold,
+            "location_jump_speed": self.location_jump_speed,
         }

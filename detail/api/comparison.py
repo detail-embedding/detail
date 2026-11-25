@@ -33,6 +33,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from detail.analysis import cohort, compare, measures, node_measures, provenance
+from detail.analysis import location_measures
+from detail.analysis.comparison_report import DEFAULT_FORMATS
 from detail.configs.comparison import ComparisonConfig
 from detail.core.errors import UserInputError
 from detail.core.utils import utc_timestamp
@@ -42,6 +44,7 @@ from detail.storage import behavior_output
 from detail.storage import comparisons as comparisons_store
 from detail.storage import experiment as experiment_store
 from detail.storage import metadata as metadata_store
+from detail.storage import node_cache as node_cache_store
 from detail.storage import snapshots as snapshots_store
 
 if (
@@ -51,6 +54,13 @@ if (
 
 STATS_FILENAME = "stats.csv"
 NODES_FILENAME = "nodes.csv"
+
+#: The fewest shuffles a locations comparison draws (§24 *The locations source*). Its family is
+#: a handful of measures, so the null costs nothing, and each measure is read by its own p:
+#: at 200 draws the smallest p a trend can show is 0.005, whatever the data say.
+LOCATION_MIN_DRAWS = 10_000
+#: The module a locations comparison reads the run of.
+LOCATION_MODULE = "location_export"
 
 #: The stages :func:`run_comparison` reports, in the order it emits them. Declared here, beside
 #: the calls, because a surface folding a per-stage fraction into a whole-run one needs the order
@@ -183,6 +193,97 @@ def _node_view(experiment, source_run_id: str):
             f"before screening its nodes, or the ranking describes a fit that is gone."
         )
     return view
+
+
+def _location_run(experiment_dir: Path, source_run_id: str) -> tuple[Path, dict]:
+    """The folder and record of the location-export run a locations comparison reads.
+
+    Raises:
+        ComparisonRunError: No such run, a run of another module, or one that is not finished.
+    """
+    run_dir = analysis_store.analysis_dir(experiment_dir, source_run_id)
+    if not (run_dir / "analysis.yaml").is_file():
+        raise ComparisonRunError(
+            f"no analysis run {source_run_id!r} in this experiment; `detail analysis list` "
+            "shows its runs"
+        )
+    record = analysis_store.read_analysis_yaml(run_dir)
+    if record.get("module_id") != LOCATION_MODULE:
+        raise ComparisonRunError(
+            f"the locations source reads a location-export run, and {source_run_id} is a "
+            f"{record.get('module_id')} run. Pick a location-export run, or another source "
+            "for this one (§24)."
+        )
+    if record.get("status") not in ("complete", "partial"):
+        raise ComparisonRunError(
+            f"location-export run {source_run_id} is {record.get('status')}; a comparison "
+            "reads a finished run"
+        )
+    return run_dir, record
+
+
+def _finished_recordings(run_record: dict) -> list[str]:
+    """The recordings a location-export run finished: what a locations comparison covers."""
+    return [
+        recording_id
+        for recording_id, state in (run_record.get("per_recording") or {}).items()
+        if (state or {}).get("status") == "complete"
+    ]
+
+
+def source_recordings(
+    experiment,
+    source_run_id: str,
+    *,
+    source: str = "labels",
+    snapshot: str | None = None,
+) -> list[str]:
+    """The recordings a comparison of ``source`` over ``source_run_id`` covers, before any
+    ``recordings`` filter: the rule :func:`prepare_comparison` applies, without measuring.
+
+    A behavior artifact covers the recordings in its ``coverage.csv`` (the snapshot's, when one
+    is named), a node cache the recordings it was built over, and a location export the
+    recordings it finished. A surface describing the cohort before a run asks this, so what it
+    shows is what the run will compare: the launch dialog described every recording in the
+    experiment, and over a run that covered some of them offered columns, values and animals
+    the run never saw.
+
+    Raises:
+        ComparisonRunError: The run cannot offer ``source``: no behavior artifact, no such
+            snapshot, no node cache, or not a finished location export.
+        ValueError: ``source`` is not one a comparison has.
+    """
+    experiment_dir = Path(experiment.dir)
+    if source == "labels":
+        run_dir = _artifact_dir(experiment_dir, source_run_id)
+        if snapshot:
+            run_dir = snapshots_store.snapshot_dir(run_dir, snapshot)
+            if not behavior_output.has_behavior_output(run_dir):
+                raise ComparisonRunError(
+                    f"run {source_run_id!r} has no snapshot {snapshot!r}"
+                )
+        return behavior_output.covered_recording_ids(run_dir)
+    if source == "nodes":
+        run_dir = analysis_store.analysis_dir(experiment_dir, source_run_id)
+        try:
+            return list(node_cache_store.read_recording_ids(run_dir))
+        except (FileNotFoundError, ValueError) as error:
+            raise ComparisonRunError(
+                f"run {source_run_id!r} has no node cache this build can read: {error}"
+            ) from error
+    if source == "locations":
+        _, record = _location_run(experiment_dir, source_run_id)
+        return _finished_recordings(record)
+    raise ValueError(f"a comparison has no source {source!r}")
+
+
+def location_source_hash(run_dir: Path, recording_ids: Sequence[str]) -> str:
+    """One digest of what a locations comparison read: each compared recording's manifest and
+    the size of its table (``location_measures.run_fingerprint``)."""
+    fingerprint = location_measures.run_fingerprint(run_dir, recording_ids)
+    return hashlib.sha256(
+        json.dumps(fingerprint, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
 def node_source_hash(built_from: dict) -> str:
@@ -479,6 +580,42 @@ def prepare_comparison(
         hierarchy = node_measures.hierarchy_rows(view, candidate_floor)
         source_hash = node_source_hash(view.built_from)
         ranking_measure = node_measures.RANKING_MEASURE
+    elif cfg.source == "locations":
+        # Refused rather than ignored, like the node source's: a snapshot pins a behavior
+        # artifact, and a location-export run has none. It is never rewritten once finished.
+        if cfg.source_snapshot:
+            raise ComparisonRunError(
+                f"the locations source reads location-export run {cfg.source_run_id}'s "
+                f"tables, which have no snapshots; snapshot {cfg.source_snapshot!r} cannot "
+                "apply. Leave the snapshot unset (§24)."
+            )
+        run_dir, run_record = _location_run(experiment_dir, cfg.source_run_id)
+        snapshot_id = None
+        report("loading", 0.0, cfg.source_run_id)
+        covered = _check_filter(cfg, _finished_recordings(run_record))
+        report("measuring", 0.0, f"{len(covered)} recording(s)")
+        try:
+            rows = location_measures.location_rows(
+                run_dir,
+                cfg.source_run_id,
+                covered,
+                settings=location_measures.Settings(
+                    sample_fps=cfg.location_sample_fps,
+                    smooth_s=cfg.location_smooth_s,
+                    moving_cm_s=cfg.location_moving_threshold,
+                    jump_speed=cfg.location_jump_speed,
+                ),
+                windows_for=cfg.windows.windows_for,
+                measures=cfg.measures,
+                progress_cb=lambda done, total: report(
+                    "measuring", done / max(total, 1), f"{done}/{total} recording(s)"
+                ),
+                stop_check=stop_check,
+            )
+        except location_measures.LocationSourceError as error:
+            raise ComparisonRunError(str(error)) from error
+        source_hash = location_source_hash(run_dir, covered)
+        ranking_measure = None
     else:
         run_dir, snapshot_id = _resolve_artifact(
             experiment, cfg.source_run_id, cfg.source_snapshot, progress=progress
@@ -584,8 +721,16 @@ def prepare_comparison(
         # the record says so rather than carrying a choice that did not apply.
         "ranking_statistic": (
             compare.STATISTIC_EFFECT
-            if design.kind == compare.BETWEEN
+            if design.kind == compare.BETWEEN or cfg.source == "locations"
             else cfg.statistic
+        ),
+        # What an item must do to be a finding, resolved (§24 *The verdict*): clear the
+        # family's floor, or, over a handful of chosen measures in different units, reach
+        # its own test. The moderated t borrows spread across the family, which means
+        # nothing across a distance, a share of time and a length, so those rank on the
+        # effect whatever was asked, and the record says so.
+        "verdict": (
+            compare.VERDICT_OWN if cfg.source == "locations" else compare.VERDICT_FAMILY
         ),
         # Ordered as tuples and joined afterwards, never joined and then sorted: `|` sorts
         # after every letter, so the two disagree whenever one group's first component is a
@@ -596,7 +741,16 @@ def prepare_comparison(
         # The recordings with no value for a grouping column, left out above (§24).
         "left_out": list(left_out),
     }
-    if cfg.source != "nodes":
+    if cfg.source == "locations":
+        # The shuffles as drawn (Tenet 9), and how the run this read was exported, which the
+        # comparison's own record is the place a reader looks for.
+        record["draws"] = max(int(cfg.draws), LOCATION_MIN_DRAWS)
+        exported = run_record.get("params") or {}
+        record["location_export"] = {"sample_fps": exported.get("sample_fps")}
+        record["measures"] = (
+            list(cfg.measures) if cfg.measures else list(location_measures.MEASURES)
+        )
+    if cfg.source == "labels":
         # The labels a difference screen over one of these columns chose (§24): a comparison
         # that scores them is scoring what its own contrast selected, and the record is the
         # one place that can say so -- the number itself looks like any other.
@@ -681,6 +835,19 @@ def run_comparison(
         write_tidy_csv(
             cdir / NODES_FILENAME, prepared.hierarchy, node_measures.HIERARCHY_COLUMNS
         )
+    # The result tables (`ranking.csv`, `significant.csv`, `units.csv`, `unit_effects.csv`,
+    # `methods.txt`) are written by the run, not only by an export: a script reads a
+    # comparison's result without drawing anything (detail#76).
+    from detail.analysis import comparison_report
+
+    report("writing", 0.5, "ranking")
+    ancestors = (
+        node_measures.ancestors_from_rows(prepared.hierarchy)
+        if prepared.hierarchy is not None
+        else None
+    )
+    ranking = comparison_report.rank_record(prepared.obs, record, ancestors)
+    comparison_report.write_result_tables(cdir, record, prepared.obs, ranking)
     comparisons_store.write_comparison_yaml(cdir, record)
     report("writing", 1.0, comparison_id)
     return Comparison(experiment, comparison_id)
@@ -786,6 +953,15 @@ class Comparison:
                 "run_id": source_run_id,
                 "content_hash": node_source_hash(run.node_view().built_from),
             }
+        if record.get("source") == "locations":
+            run_dir = analysis_store.analysis_dir(experiment_dir, source_run_id)
+            if not (run_dir / "analysis.yaml").is_file():
+                return {"run_id": source_run_id}
+            compared = sorted(record.get("provenance", {}).get("recordings", {}))
+            return {
+                "run_id": source_run_id,
+                "content_hash": location_source_hash(run_dir, compared),
+            }
         return {
             "run_id": source_run_id,
             "content_hash": snapshots_store.artifact_hash(
@@ -818,7 +994,7 @@ class Comparison:
         self,
         out_dir: Path | str | None = None,
         *,
-        formats: tuple[str, ...] = ("pdf", "svg", "png"),
+        formats: tuple[str, ...] = DEFAULT_FORMATS,
         style: "FigureStyle | None" = None,
         theme: str | None = None,
         progress: Callable[[str, float, str], None] | None = None,

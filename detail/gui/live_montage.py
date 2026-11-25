@@ -204,6 +204,8 @@ FRAME_PX = 2
 MASKS_KEY = "interpret/montage_masks"
 #: How strongly a clip outside the filters is washed out when masks are off (0–255).
 MISS_SCRIM_ALPHA = 165
+#: A rule heading's line width (:meth:`LiveMontage.set_rule_headings`).
+RULE_PX = 3
 #: A removed clip's ✕ (and the hovered tile's faint one): its box's side and its inset from the
 #: picture's top-right corner.
 CROSS_PX = 18
@@ -699,6 +701,9 @@ class LiveMontage(QWidget):
     context_changed = pyqtSignal(float)
     #: The tiles were replaced or re-marked (:meth:`set_clips`).
     clips_changed = pyqtSignal()
+    #: A tile got its first picture, or its picture could not be made, or the pictures were
+    #: reset (:meth:`unpictured`).
+    pictures_changed = pyqtSignal()
 
     def __init__(
         self,
@@ -762,6 +767,9 @@ class LiveMontage(QWidget):
         self._overlay: BusyOverlay | None = None
         self._last_tick: float | None = None
         self._click_hint: Callable[[int], str] | None = None
+        #: Whether a drag or a Shift-click marks a run of tiles, or every press is one click
+        #: (:meth:`set_click_hint`'s ``runs``).
+        self._marks_runs = True
         self._last_clicked: int | None = None
         #: ``(index, point)`` of the left press not yet released, while clickable.
         self._press: tuple[int, QPoint] | None = None
@@ -773,6 +781,8 @@ class LiveMontage(QWidget):
         self._preview: RunPreview | None = None
         #: ``(title, count)`` per section, in display order; empty for one untitled run.
         self._sections: list[tuple[str, int]] = []
+        #: Whether a titled section's heading is drawn as a dashed rule (:meth:`set_rule_headings`).
+        self._rule_headings = False
         self._seen = 0
         #: The scroll position last seen, and whether the last move was down — which side of
         #: the view the lookahead row is on.
@@ -916,6 +926,7 @@ class LiveMontage(QWidget):
             self._failed.clear()
             self._coming.clear()
             self._request_visible()
+            self.pictures_changed.emit()
         else:
             self._reset_pictures()
 
@@ -975,6 +986,20 @@ class LiveMontage(QWidget):
     def sections(self) -> list[tuple[str, int]]:
         return list(self._sections)
 
+    def set_rule_headings(self, on: bool) -> None:
+        """Draw each titled section's heading as a **rule**: a dashed line across the grid with the
+        title centred on it, in a band about three lines tall — a boundary to cross, where a plain
+        heading is a label to read.
+
+        CALIBRATE's cutoff. A stepped line through one unbroken grid moved no tile but was easy to
+        miss; a heading in the font of a caption was the first build's, under faded clips. The rule
+        is dashed and in the theme's handle colour (the curve's cutoff line), so it is told from a
+        tile edge by its pattern as well as its colour, and its words say which side is which.
+        """
+        self._rule_headings = bool(on)
+        self._relayout()
+        self.canvas.update()
+
     def clips(self) -> list[MontageClip]:
         return list(self._clips)
 
@@ -992,10 +1017,19 @@ class LiveMontage(QWidget):
         self._request_visible()
 
     # -- clicking ----------------------------------------------------------- #
-    def set_click_hint(self, hint: Callable[[int], str] | None) -> None:
+    def set_click_hint(
+        self, hint: Callable[[int], str] | None, *, runs: bool = True
+    ) -> None:
         """Turn click-to-mark on with ``hint`` — what a click on tile ``index`` will do, the first
-        line of its tooltip — or off with ``None`` (the default)."""
+        line of its tooltip — or off with ``None`` (the default).
+
+        ``runs=False``: a click means one tile and nothing more — no drag or Shift-click run, and
+        no run preview drawn. For a page whose click *chooses* a tile (CALIBRATE moving its
+        cutoff to it) rather than marking it: a drag there would draw a removal that never
+        happens.
+        """
         self._click_hint = hint
+        self._marks_runs = bool(runs)
         if hint is None:
             self.canvas.unsetCursor()
             self._cancel_drag()
@@ -1095,7 +1129,7 @@ class LiveMontage(QWidget):
         """The mouse moved over (or, while dragging, anywhere off) the canvas."""
         if self._press is not None and not buttons & Qt.MouseButton.LeftButton:
             self._cancel_drag()  # the release went somewhere else
-        if self._press is not None and not self._dragging:
+        if self._press is not None and not self._dragging and self._marks_runs:
             moved = (point - self._press[1]).manhattanLength()
             if moved >= QApplication.startDragDistance():
                 self._dragging = True
@@ -1146,7 +1180,7 @@ class LiveMontage(QWidget):
     def _update_preview(self) -> None:
         """Recompute the run preview from the drag, Shift and the hovered tile."""
         preview = None
-        if self.is_clickable() and self._clips:
+        if self.is_clickable() and self._clips and self._marks_runs:
             if self._dragging and self._press is not None:
                 start = self._press[0]
                 end = start if self._drag_end is None else self._drag_end
@@ -1205,7 +1239,12 @@ class LiveMontage(QWidget):
         )
         anchor = self._last_clicked
         self._last_clicked = index
-        if shift and anchor is not None and 0 <= anchor < len(self._clips):
+        if (
+            shift
+            and self._marks_runs
+            and anchor is not None
+            and 0 <= anchor < len(self._clips)
+        ):
             # Exactly the run the Shift preview showed — computed by the same function.
             back = self._shift_puts_back()
             run = self.run_between(anchor, index, back)
@@ -1513,8 +1552,10 @@ class LiveMontage(QWidget):
         return max((self.grid.viewport().width() - used) // 2, 0)
 
     def _heading_px(self) -> int:
-        """A section heading's band: one line of the bold heading font and a little air."""
-        return QFontMetrics(emphasis_font(self.canvas, steps=0)).height() + 8
+        """A section heading's band: one line of the bold heading font and a little air — or,
+        drawn as a rule, room either side of it so the two sections stand apart."""
+        line = QFontMetrics(emphasis_font(self.canvas, steps=0)).height()
+        return line * 3 if self._rule_headings else line + 8
 
     def _runs(self) -> list[tuple[int, int, str, int]]:
         """``(first index, count, title, y of its first row)`` per section — one untitled run
@@ -1712,6 +1753,7 @@ class LiveMontage(QWidget):
         self._failed.clear()
         self._coming.clear()
         self._request_visible()
+        self.pictures_changed.emit()
 
     def _scrolled(self, value: int) -> None:
         if value != self._scroll_at:
@@ -1768,12 +1810,29 @@ class LiveMontage(QWidget):
         if generation != self._generation or index >= len(self._clips):
             return
         self._coming.discard(index)
+        before = (index in self._images, index in self._failed)
         if image is None:
             self._failed.add(index)
         else:
             self._failed.discard(index)
             self._images[index] = image
         self.canvas.update(self.tile_rect(index))
+        if (index in self._images, index in self._failed) != before:
+            self.pictures_changed.emit()
+
+    def unpictured(self) -> tuple[int, int]:
+        """``(waiting, failed)``: tiles whose first picture is asked for and not yet here, and
+        tiles whose picture could not be made — they paint *no preview*. A surface that takes a
+        decision about every clip (a review's Finish) waits for both to be zero: a clip whose
+        picture never showed was not seen, and a decision about it is a decision against nothing
+        (``tests/gui/test_frame_source.py``'s class).
+
+        A tile never asked for — scrolled past in one jump — is in neither: how far the grid was
+        looked through is :meth:`seen`'s question, not this one."""
+        total = len(self._clips)
+        waiting = sum(1 for index in self._coming if index < total)
+        failed = sum(1 for index in self._failed if index < total)
+        return waiting, failed
 
     # -- painting ----------------------------------------------------------- #
     def _paint(self, canvas: QWidget, dirty: QRect) -> None:
@@ -1783,14 +1842,18 @@ class LiveMontage(QWidget):
         caption_ink = QColor(theme.text_secondary)
         if self._sections:
             painter.setFont(emphasis_font(canvas, steps=0))
-            painter.setPen(QColor(theme.text))
             for title, rect in self.heading_rects():
-                if rect.intersects(dirty):
-                    painter.drawText(
-                        rect.adjusted(0, 0, 0, -4),
-                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
-                        title,
-                    )
+                if not rect.intersects(dirty):
+                    continue
+                if self._rule_headings:
+                    self._paint_rule(painter, rect, title, theme)
+                    continue
+                painter.setPen(QColor(theme.text))
+                painter.drawText(
+                    rect.adjusted(0, 0, 0, -4),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
+                    title,
+                )
         clickable = self.is_clickable()
         layer = self._layer
         preview = self._preview
@@ -1831,9 +1894,12 @@ class LiveMontage(QWidget):
             elif (
                 clickable
                 and layer is None
+                and self._marks_runs
                 and index == self._hovered
                 and not self.is_off(index)
             ):
+                # The cue is "a click removes this". A click-only grid (CALIBRATE) chooses a
+                # clip instead, so it draws none.
                 self._paint_cross(painter, index, cue=True)
             number = layer.number(index) if layer is not None else None
             if number is not None:
@@ -1883,6 +1949,35 @@ class LiveMontage(QWidget):
                 painter.setPen(QPen(QColor(theme.text), 2))
                 painter.drawRect(picture.adjusted(ring, ring, -ring, -ring))
         painter.end()
+
+    def rule_rect(self, rect: QRect) -> QRect:
+        """Where a rule heading's line runs inside its heading ``rect``: across the columns, at
+        its middle."""
+        cols = self._columns()
+        right = self._left() + cols * (self._tile_px + _GAP) - _GAP
+        y = rect.center().y()
+        return QRect(self._left(), y - RULE_PX // 2, right - self._left(), RULE_PX)
+
+    def _paint_rule(self, painter, rect: QRect, title: str, theme) -> None:
+        """A dashed line across the grid, broken in the middle by its title."""
+        line = self.rule_rect(rect)
+        y = line.center().y()
+        pen = QPen(QColor(theme.handle), RULE_PX, Qt.PenStyle.DashLine)
+        pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+        painter.setPen(pen)
+        painter.drawLine(line.left(), y, line.right(), y)
+        metrics = painter.fontMetrics()
+        text = metrics.elidedText(title, Qt.TextElideMode.ElideRight, line.width())
+        width = metrics.horizontalAdvance(text) + 2 * metrics.height()
+        label = QRect(
+            line.center().x() - width // 2,
+            y - metrics.height() // 2 - 3,
+            width,
+            metrics.height() + 6,
+        )
+        painter.fillRect(label, QColor(theme.surface))
+        painter.setPen(QColor(theme.text))
+        painter.drawText(label, Qt.AlignmentFlag.AlignCenter, text)
 
     def _paint_preview(self, painter, picture: QRect, put_back: bool) -> None:
         """A run preview on one picture: a translucent tint and a ring inside its edge."""

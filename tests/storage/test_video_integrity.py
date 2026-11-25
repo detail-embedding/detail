@@ -83,3 +83,27 @@ def test_raise_on_video_issues(tmp_path):
     with pytest.raises(ValueError, match="not usable"):
         video_integrity.raise_on_video_issues(issues)
     video_integrity.raise_on_video_issues([])  # empty is a no-op
+
+
+def _probe(fps, resolution=(64, 48)):
+    return {"resolution": list(resolution), "fps": fps}
+
+
+@pytest.mark.parametrize("fps", [29.99, 30.0, 29.97 * 1.009])
+def test_a_variable_rate_camera_s_next_file_is_another_part(fps):
+    """A container's rate is its frames over its duration, so two files from one
+    variable-rate camera (a phone, a webcam, a screen recorder) read as 29.97 and 29.99. At
+    three decimals that refused them; frame times come from each part's own timestamps, so
+    a rate within ``PART_FPS_TOLERANCE`` misplaces nothing."""
+    assert video_integrity.another_parts_shape(_probe(29.97), _probe(fps)) is None
+
+
+@pytest.mark.parametrize("fps", [25.0, 29.97 * 1.011, 59.94])
+def test_another_rate_is_not_another_part(fps):
+    reason = video_integrity.another_parts_shape(_probe(29.97), _probe(fps))
+    assert reason is not None and "frames a second" in reason
+
+
+def test_another_size_is_not_another_part_whatever_its_rate():
+    reason = video_integrity.another_parts_shape(_probe(30.0), _probe(30.0, (128, 96)))
+    assert reason == "it is 128×96, and the recording's video is 64×48"

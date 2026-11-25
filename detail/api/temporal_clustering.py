@@ -26,7 +26,6 @@ from detail.api.clip_review import ClipReviewOperations
 from detail.api.clustering_nodes import NodeCacheMixin
 from detail.api.experiment import Experiment
 from detail.configs.temporal_clustering import TemporalClusteringConfig
-from detail.core import run_selection
 from detail.pipeline import temporal_clustering as temporal_pipeline
 from detail.storage import behavior_output, temporal_runs
 from detail.storage import snapshots as snapshots_store
@@ -106,23 +105,34 @@ class TemporalClusteringRun(
         self._require_fit()
         return self._read_state()
 
-    def data_sources(self) -> dict:
-        """``{source_recording_ids, embed_run_id, embed_run_ids, track_id, method}``.
+    def _recording_ids(self, state) -> list[str]:
+        """The recordings the fit read (``AuthoredRun.data_sources``)."""
+        return list(state.source_recording_ids)
 
-        ``embed_run_ids`` is each recording's own embedding run, which is what a reader
-        must use (``core.run_selection.run_for_recording``); ``embed_run_id`` is set only
-        when every recording's agrees.
+    def finish_blocker(self) -> str | None:
+        """Why this run cannot be finished yet — no behavior carries a label — or ``None``.
+
+        ``AuthoredRun.finish_blocker`` for a clustering run. A fit is a tree nobody has read
+        until a node is labelled: no instance in the output carries a label, so AUDIT has
+        nothing to review and BROWSE nothing to show. A run finished that way showed an AUDIT
+        saying "label a node on INTERPRET" over an INTERPRET saying "this run is finished,
+        reopen it".
+
+        Counted from the stored resolution (``named_count``), which a run written before labels
+        lived on nodes reports too, so a legacy run with names is not refused. One read of the
+        state file, no fit.
+
+        Worded in the screen's noun: INTERPRET calls a node of this tree a **behavior**
+        (``TEMPORAL_TERMS``), and ``tests/gui/test_temporal_workspace.py`` holds every word it
+        shows to that, this sentence included.
         """
-        state = self.state()
-        return {
-            "source_recording_ids": list(state.source_recording_ids),
-            "embed_run_id": state.embed_run_id,
-            "embed_run_ids": run_selection.runs_by_recording(
-                state, state.source_recording_ids
-            ),
-            "track_id": state.track_id,
-            "method": state.method,
-        }
+        if self.state().named_count():
+            return None
+        return (
+            "No behavior is labelled yet, so this run cannot be finished. Label one on "
+            f"Interpret (in the CLI, `detail analysis temporal-interpret --run {self.id} "
+            "--name-node NODE=NAME`; `--tree` lists the nodes), then finish it"
+        )
 
     def subsample_note(self) -> str | None:
         """What the fit left out, in a sentence, or ``None`` if it compared every bout.

@@ -305,8 +305,8 @@ def test_a_pose_checkpoint_waits_for_a_skeleton_that_fits(qapp, tmp_path, monkey
     assert "Keypoints" in dialog._kind.text() and "3 points" in dialog._kind.text()
     assert not dialog._ok.isEnabled(), "Import waits until a skeleton is chosen"
 
-    dialog._skeleton.setCurrentIndex(dialog._skeleton.findData("quadruped_side_5"))
-    assert "places 3 points but the skeleton has 5" in dialog._check.text()
+    dialog._skeleton.setCurrentIndex(dialog._skeleton.findData("midline_2"))
+    assert "places 3 points but the skeleton has 2" in dialog._check.text()
     assert not dialog._ok.isEnabled()
 
     dialog._skeleton.setCurrentIndex(dialog._skeleton.findData("midline_3"))

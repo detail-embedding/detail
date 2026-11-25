@@ -9,9 +9,10 @@ The concrete failures this pins:
 - ``cluster_eval`` hand-listed six keys into ``record["params"]``. ``stream_name`` was added
   later and never joined them, so **every one of the 230 analysis runs on disk omits the
   ground-truth vocabulary it scored against** — including runs that passed one explicitly.
-- ``query_eval`` had the same bug in ``build_job`` once ("the bug that made a recorded run
-  ignore its matcher") and fixed it by carrying fields *by name* instead of by hand. That fix
-  never propagated one file over. This test is what makes it propagate.
+- ``query_eval``, a module since removed, had the same bug in ``build_job`` once ("the bug
+  that made a recorded run ignore its matcher") and fixed it by carrying fields *by name*
+  instead of by hand. That fix never propagated one file over. This test is what makes it
+  propagate.
 
 Both checks are static — they read source and field names, never call ``validate()`` and need
 no experiment on disk. That matters: ``validate()`` has two different signatures across the two
@@ -59,9 +60,6 @@ def _reaches(field: str, job_fields: set[str]) -> bool:
 
 
 _NOT_PART_OF_THE_RESULT: dict[str, dict[str, str]] = {
-    "query_eval": {
-        "source_recording_ids": "resolved to the eligible set; recorded as recording_ids",
-    },
     "location_export": {
         "source_recording_ids": "recorded as the record's recording_ids",
     },
@@ -151,7 +149,7 @@ def test_the_allow_lists_do_not_excuse_fields_that_no_longer_exist(module_id):
 
 def test_the_registries_are_populated():
     """A data-driven guard over an empty registry passes by testing nothing."""
-    assert len(ANALYSIS_MODULES) >= 4, ANALYSIS_MODULES
+    assert len(ANALYSIS_MODULES) >= 3, ANALYSIS_MODULES
     assert len(PROCESSING_MODULES) >= 4, PROCESSING_MODULES
 
 
@@ -191,17 +189,17 @@ def test_the_phases_guard_would_catch_a_module_with_none_declared(monkeypatch):
 
 
 def test_the_guard_would_catch_a_dropped_field(monkeypatch):
-    """Guard the guard: with `stream_name` gone from the job, the check must fail — that is
+    """Guard the guard: with a config field gone from the job, the check must fail — that is
     the exact shape of the bug it exists for."""
-    from detail.pipeline.query_eval import QueryEvalJob
+    from detail.pipeline.query import QueryJob
 
-    kept = tuple(f for f in dataclass_fields(QueryEvalJob) if f.name != "stream_name")
+    kept = tuple(f for f in dataclass_fields(QueryJob) if f.name != "background_seed")
     monkeypatch.setattr(
         "tests.configs.test_record_completeness.dataclass_fields",
-        lambda cls: kept if cls is QueryEvalJob else dataclass_fields(cls),
+        lambda cls: kept if cls is QueryJob else dataclass_fields(cls),
     )
-    with pytest.raises(AssertionError, match="stream_name"):
-        test_every_config_field_reaches_the_job("query_eval")
+    with pytest.raises(AssertionError, match="background_seed"):
+        test_every_config_field_reaches_the_job("query")
 
 
 def test_the_guard_would_catch_a_module_that_records_no_params_at_all(monkeypatch):

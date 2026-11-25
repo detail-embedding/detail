@@ -117,8 +117,29 @@ RANKING = "ranking this cluster's clips…"
 REVIEWED_READ_ONLY = "This cluster is reviewed. Press Reopen review to change it."
 
 
+def reviewed_read_only(noun: str) -> str:
+    """Why a finished scope's clips do not respond to a click: :data:`REVIEWED_READ_ONLY` for
+    a ``noun`` other than a cluster (a query run reviews a recording)."""
+    return REVIEWED_READ_ONLY.replace("cluster", noun)
+
+
 def clips_text(n: int) -> str:
     return f"{n:,} clip" if n == 1 else f"{n:,} clips"
+
+
+def no_preview_text(n: int) -> str:
+    """Why Finish is off while ``n`` clips show *no preview*: Finish counts every clip not
+    removed as the label, and a clip whose picture never showed was not seen."""
+    shows = "shows" if n == 1 else "show"
+    return (
+        f"{clips_text(n)} {shows} no preview, and a clip nobody saw cannot be counted. "
+        "Build the previews, then finish."
+    )
+
+
+def waiting_text(n: int) -> str:
+    """Why Finish is off while ``n`` clips' pictures are still on their way."""
+    return f"Waiting for {clips_text(n)} to show."
 
 
 def preview_text(preview) -> str:
@@ -168,7 +189,7 @@ def edit_label(edit, side: str) -> str | None:
     return None
 
 
-def reopen_tip(precision: str, removed: int) -> str:
+def reopen_tip(precision: str, removed: int, noun: str = "cluster") -> str:
     """Reopen review's tooltip: what reopening changes, and that the removals survive it."""
     figure = f"update {precision}" if precision else "update the figure"
     if removed <= 0:
@@ -177,7 +198,7 @@ def reopen_tip(precision: str, removed: int) -> str:
         kept = "Your 1 removal is kept."
     else:
         kept = f"Your {removed:,} removals are kept."
-    return f"Change this cluster's removals, then finish again to {figure}. {kept}"
+    return f"Change this {noun}'s removals, then finish again to {figure}. {kept}"
 
 
 def tag_for(edit) -> str:
@@ -294,10 +315,17 @@ class ReviewPane(QWidget):
     next_requested = pyqtSignal()
     again_requested = pyqtSignal()
 
-    def __init__(self, parent=None, *, export) -> None:
+    def __init__(
+        self, parent=None, *, export, noun: str = "cluster", keys: str = "label_check"
+    ) -> None:
         """``export`` is the page's ``montage_export.ExportSource``: the clips **Export ▾**
-        writes."""
+        writes. ``noun`` is what one review covers — a ``"cluster"`` on a clustering run, a
+        ``"recording"`` of a behavior on a query run (§20) — and ``keys`` the ``QSettings`` group
+        the grid's orientation, layers and context are kept under, so each page keeps its own.
+        """
         super().__init__(parent)
+        self._noun = noun
+        self._keys = keys
         self._label = ""
         self._reason = "Still reading this run…"
         self._targets: list[str] = []
@@ -389,9 +417,9 @@ class ReviewPane(QWidget):
         column.addWidget(self.undo_row)
 
         self.montage = LiveMontage(
-            aligned_key=ALIGNED_KEY,
-            look_key=LOOK_KEY,
-            context_key=CONTEXT_KEY,
+            aligned_key=ALIGNED_KEY.replace("label_check", keys, 1),
+            look_key=LOOK_KEY.replace("label_check", keys, 1),
+            context_key=CONTEXT_KEY.replace("label_check", keys, 1),
             export=export,
         )
         # The order is fixed: least typical first.
@@ -404,6 +432,7 @@ class ReviewPane(QWidget):
         self.montage.clip_activated.connect(self._on_activated)
         self.montage.clip_context_requested.connect(self._on_menu)
         self.montage.seen_changed.connect(lambda _n: self._sync())
+        self.montage.pictures_changed.connect(self._sync)
         self.montage.exports.picking_changed.connect(lambda _on: self._sync())
         column.addWidget(self.montage, 1)
 
@@ -438,15 +467,15 @@ class ReviewPane(QWidget):
         self.precision = QLabel("")
         self.precision.setFont(emphasis_font(self.precision, steps=4))
         self.precision.setToolTip(
-            "Precision: the share of this cluster's clips that are its label, counted over "
-            "every clip."
+            f"Precision: the share of this {self._noun}'s clips that are its label, counted "
+            "over every clip."
         )
         row.addWidget(self.precision)
         row.addSpacing(8)
         self.result = QLabel("")
         row.addWidget(self.result)
         row.addStretch(1)
-        self.next = QPushButton("Next cluster")
+        self.next = QPushButton(f"Next {self._noun}")
         self.next.clicked.connect(self.next_requested)
         row.addWidget(self.next)
         # "Reopen", not "again" or "start over": the removals are kept, and only finishing
@@ -459,9 +488,14 @@ class ReviewPane(QWidget):
     # -- inputs ------------------------------------------------------------------------- #
     def show_cluster(self, node: int, label: str, colour=None) -> None:
         """A cluster to review: ``cluster #871`` of label path ``label``."""
+        self.show_scope(f"cluster #{int(node)}", label, colour)
+
+    def show_scope(self, title: str, label: str, colour=None) -> None:
+        """A scope to review — ``title`` (*cluster #871*, a recording's name) — of label path
+        ``label``."""
         self._label = label
-        self.title.setText(f"cluster #{int(node)}")
-        self.what.setText(f"cluster #{int(node)}")
+        self.title.setText(title)
+        self.what.setText(title)
         self.label_name.setText(display(label))
         self.box_label.setText(display(label))
         if colour is not None:
@@ -513,7 +547,7 @@ class ReviewPane(QWidget):
         self,
         precision: str,
         summary: str,
-        next_node: int | None,
+        next_node: int | str | None,
         *,
         removed: int,
         when: str = "",
@@ -528,9 +562,12 @@ class ReviewPane(QWidget):
         self.precision.setText(precision)
         self.result.setText(summary)
         self.when.setText(f"· {when}" if when else "")
-        self.next.setText(
-            f"Next cluster: #{next_node}" if next_node is not None else "Next cluster"
-        )
+        if next_node is None:
+            self.next.setText(f"Next {self._noun}")
+        elif isinstance(next_node, int):
+            self.next.setText(f"Next {self._noun}: #{next_node}")
+        else:
+            self.next.setText(f"Next {self._noun}: {next_node}")
         self._next_node = next_node
         self._sync()
 
@@ -624,13 +661,22 @@ class ReviewPane(QWidget):
             # Pick mode has the grid: Enter there is not a step of the review.
             set_available(self.finish, False, PICKING_FINISH)
         elif not total:
-            set_available(self.finish, False, "This cluster has no clips.")
+            set_available(self.finish, False, f"This {self._noun} has no clips.")
         else:
-            set_available(self.finish, self.reached_end(), SCROLL_FIRST)
+            waiting, failed = self.montage.unpictured()
+            if failed:
+                # Scrolling on would not help: say it first.
+                set_available(self.finish, False, no_preview_text(failed))
+            elif not self.reached_end():
+                set_available(self.finish, False, SCROLL_FIRST)
+            else:
+                set_available(self.finish, not waiting, waiting_text(waiting))
             if self.finish.isEnabled():
+                # "or moved" only where a clip can be moved: a query behavior's cannot.
+                moved = " or moved" if self._targets else ""
                 self.finish.setToolTip(
-                    f"Save the review: every clip not removed counts as {name}, every removed "
-                    "or moved clip as not. Gives this cluster's exact precision."
+                    f"Save the review: every clip not removed counts as {name}, every removed"
+                    f"{moved} clip as not. Gives this {self._noun}'s exact precision."
                 )
         # The app's style draws a default button with only a coloured border; filled with the
         # palette's accent once it can be pressed, it reads as the step to take. Accent, not
@@ -640,7 +686,9 @@ class ReviewPane(QWidget):
         set_button_color(self.finish, fill if self.finish.isEnabled() else None)
         set_available(self.again, not reason, reason)
         if not reason:
-            self.again.setToolTip(reopen_tip(self.precision.text(), self._removed))
+            self.again.setToolTip(
+                reopen_tip(self.precision.text(), self._removed, self._noun)
+            )
         if self.next.isVisible():
             self.next.setToolTip("Open the next cluster nobody has reviewed yet.")
 
@@ -728,7 +776,7 @@ class ReviewPane(QWidget):
         if not actions:
             return None
         if not self.can_mark():
-            why = self._reason or REVIEWED_READ_ONLY
+            why = self._reason or reviewed_read_only(self._noun)
             for action in actions:
                 action.setEnabled(False)
                 action.setToolTip(why)

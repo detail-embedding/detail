@@ -4,7 +4,7 @@ A **behavior scan** finds a behavior you can already name, such as rearing or gr
 every video. You show it a few **example clips** of each behavior. It then looks through
 every frame of every recording for stretches whose embedding (chapter 5) is like your
 examples, and gives each a **confidence** from 0 to 1. You choose a **cut-off**: matches
-above it count as the behavior. DETAIL then counts bouts, time spent and so on, per
+above it count as the behavior. Detail then counts bouts, time spent and so on, per
 recording.
 
 No model is trained. A scan takes seconds, and changing the cut-off afterwards costs
@@ -13,14 +13,14 @@ nothing: the scan is not run again.
 ## The steps at a glance
 
 Each box is one step on this page. Click a box to go to that step. The first tag says where
-the step is in DETAIL.
+the step is in Detail.
 
 <div class="guide-flow" markdown>
 
 1. [Start a behavior scan](#1-start-a-behavior-scan) <span class="where where-app">Experiments › Analysis › New analysis</span> <span class="note">Choose the recordings and the embedding.</span>
 2. [Mark example clips](#2-mark-example-clips) <span class="where where-app">Experiments › Analysis › New analysis › Mark examples</span> <span class="note">About 10 minutes: three or four clips per behavior.</span>
 3. [Run the scan](#3-run-the-scan) <span class="where where-app">Experiments › Analysis › New analysis</span> <span class="note">Under a minute, on the processor.</span>
-4. [Choose the cut-off](#4-choose-the-cut-off) <span class="where where-app">Experiments › Analysis › the run › Calibrate</span> <span class="note">Watch the clips near the line, and move it.</span>
+4. [Choose the cut-off](#4-choose-the-cut-off) <span class="where where-app">Experiments › Analysis › the run › Calibrate</span> <span class="note">Watch the clips either side of the line, move it, and keep it.</span>
 5. [Check the matches](#5-check-the-matches) <span class="where where-app">Experiments › Analysis › the run › Browse, Audit</span> <span class="note">Look through what was kept, and measure how often it is right.</span>
 6. [Read the measures](#6-read-the-measures) <span class="where where-app">Experiments › Analysis › the run › Measures</span> <span class="note">Bouts, rate and time, per recording.</span>
 
@@ -95,16 +95,18 @@ In the **Launch an analysis run** dialog:
 
 The **Mark examples** window opens on the first recording. For each behavior:
 
-1. On the right, click **Add**, and type the behavior's name, such as `rearing`. The name
-   appears under **Annotating:** under the video.
+1. Under the video, type the behavior's name, such as `rearing`, and press ++enter++ (or
+   click **Add behavior**). The box then says **Annotating: rearing**. Until a behavior has a
+   name, **Mark start** and **Mark end** are greyed.
 2. Find a clear example in the video: play it, or drag the slider.
 3. At the first frame of the behavior, click **Mark start**. At the last, click **Mark
    end**. The clip appears in the list on the right, and as a coloured mark on the slider.
 4. Mark two or three more, from **other recordings** if you can: choose them in
    **Recording** at the top left.
 
-Then click **Add** again for the next behavior, such as `grooming`, and do the same. When
-every behavior has a tick in **Examples**, click **Use these clips**.
+Then click **Add** on the right for the next behavior, such as `grooming`, and do the same.
+When every behavior has a tick in **Examples**, click **Use these clips**. It stays greyed
+until at least one behavior has an example, and the line above it says what is missing.
 
 ![The Mark examples window: box3 with the mouse outlined, the slider with the clips marked on it, the behaviors rearing with 4 examples and grooming with 3, each ticked, and the list of the seven clips with their times and recordings. Numbered markers sit on every control.](../../assets/user-guides/single-animal/behavior-scan/mark-examples.png)
 
@@ -139,7 +141,8 @@ every behavior has a tick in **Examples**, click **Use these clips**.
         mark the end.
     19. **Mark end**: the clip ends at this frame.
     20. **Delete clip**: removes the chosen clip. The ++delete++ key does the same.
-    21. **Use these clips**: closes the window and fills the **Behaviors** table.
+    21. **Use these clips**: closes the window and fills the **Behaviors** table. Greyed until
+        at least one behavior has an example.
     22. **Cancel**: closes the window and forgets every change made in it.
 
 The scan can only find what your clips show it, so the clips you choose matter more than any
@@ -204,9 +207,9 @@ after choosing the cut-offs.
     6. **Delete analysis**: deletes the run and its files, after asking.
     7. **Start new analysis**: opens **New analysis** again.
 
-Click a card to open it: it fills the window. Along its top are the four views as tabs, to
-switch between them, and under those the behaviors, here **rearing** and **grooming**: click
-one to work on it. To go back to the run's page, click its id, here **an_02**, in the line at
+Click a card to open it: it fills the window. At its top, **Behavior** picks the behavior
+to work on, here **rearing** or **grooming**, and under it are the four views as tabs, to
+switch between them. To go back to the run's page, click its id, here **an_02**, in the line at
 the top of the window.
 
 ## 4. Choose the cut-off
@@ -216,7 +219,7 @@ The scan does not decide what is the behavior. It gives every stretch of every v
 The **cut-off** is where you draw the line: matches above it count as the behavior, and
 everything the later steps report, bouts, time and rate, is counted from them.
 
-There is no right cut-off that DETAIL could choose for you. A confidence says how alike two
+There is no right cut-off that Detail could choose for you. A confidence says how alike two
 stretches look, not whether the animal is rearing, and how alike is alike enough depends on
 the behavior, the camera and your examples. Too low a cut-off counts things that are not the
 behavior; too high, and real bouts are missed. Only you can tell which, by watching the clips
@@ -275,27 +278,38 @@ The **Calibrate** view is where the cut-off is set, one behavior at a time.
         how fast the animal moved during them.
     30. **Measure this run**: works those measures out. It reads every match's tracking,
         which can take a minute on a long run.
-    31. **Finish**: says you are done with the run. It can be reopened.
+    31. **Finish**: says you are done with the run. It can be reopened. Greyed out until
+        every behavior has a cut-off.
     32. **Reopen**: opens a finished run again, to change a cut-off. Greyed out while the
         run is open.
 
+Every match plays at once, in a grid, most confident first. The cut-off is a dashed line
+across the grid, labelled with how many are kept and dropped: the clips above it are kept,
+the ones below it dropped. Scroll past the line and a bar over the grid says the clips in view
+are dropped, with **↑ Back to the cutoff**. The first clips are usually your own examples,
+which the scan finds too; they are tagged *your example*.
+
 To choose the cut-off:
 
-1. Click the clips just **right** of the divider, the least confident ones kept, and watch
-   them. Are they the behavior?
-2. Click the clips just **left** of it, the most confident ones dropped. Are they?
-3. If most kept clips near the line are wrong, press **▶** or drag the divider right. If
-   most dropped clips are right, move it left.
-4. Do the same for each behavior, chosen under the tabs.
+1. Watch the last clips before the line, the least confident ones kept. Are they the
+   behavior?
+2. Watch the first clips after it, the most confident ones dropped. Are they?
+3. If the kept clips near the line are wrong, move the cut-off up: drag the line on the
+   curve, move the slider, or **click the clip** you want to be the last one kept. If the
+   dropped clips are right, move it down. The grid and every count follow as you move it.
+4. Click **Keep clips from 0.5 up**. Moving the cut-off only shows what it would keep;
+   this button saves it. Until you click it, an amber band above the curve says **⚠ Not
+   saved**, and Audit, Browse and Measures say so too, still using the saved cut-off; after
+   it, the band goes and the line reads **✓ rearing: cut-off 0.5 saved**.
+5. Do the same for each behavior, chosen under **Behavior**.
 
-The cut-off is saved as you let go of the divider. There is no Save button.
-
-??? info "About this step: reading the ethograms and locations"
-    These show **where** the kept matches fall, which the clips cannot. A cut-off that
-    keeps a behavior only in the first minute of every video, or only in one corner of one
-    box, is worth a second look. On the demo, the orange note under the locations says all
-    of box1's rearing matches are in the top third of the box: that mouse rears against one
-    wall, which may be true, and is worth checking in the clips.
+??? info "About this step: where the kept matches fall"
+    **Browse** draws an ethogram of where in each video the kept matches fall, and
+    **Measures** draws where in the box each one happened. A cut-off that keeps a behavior
+    only in the first minute of every video, or only in one corner of one box, is worth a
+    second look. On the demo, the note under the locations says all of box1's rearing
+    matches are in the top third of the box: that mouse rears against one wall, which may be
+    true, and is worth checking in the clips.
 
 ??? warning "If this doesn't work"
     - **No cut-off keeps the behavior without also keeping something else:** the examples
@@ -306,9 +320,13 @@ The cut-off is saved as you let go of the divider. There is no Save button.
 
 ## 5. Check the matches
 
-**Browse** lists every match above the cut-off, by recording and time. Click a row to play
-it. Read it in order: a mistake the scan makes again and again, such as a mouse leaning on
-one wall counted as rearing, stands out in a list.
+**Browse** shows every match each behavior's cut-off keeps: an ethogram across the top, one
+row per recording, each behavior in its own colour and pattern, keyed by the swatch beside its
+name under **Behaviors**, and below it the list of matches by recording and time, beside a player
+that opens on the first one. Click a mark on the ethogram, or a row, to play it. Untick
+behaviors, recordings or a metadata group on the left to narrow both. Read the list in order:
+a mistake the scan makes again and again, such as a mouse leaning on one wall counted as
+rearing, stands out in a list.
 
 ![The Browse view for rearing at cut-off 0.5: the list of kept matches, each with its recording, start, end and confidence, and the player beside it playing the first one. Numbered markers sit on every control.](../../assets/user-guides/single-animal/behavior-scan/browse.png)
 
@@ -328,9 +346,19 @@ one wall counted as rearing, stands out in a list.
     12. **Reopen**: opens a finished run again.
 
 **Audit** puts a number on how often the kept matches are really the behavior: the
-**precision**. It plays a random sample of clips one at a time, **without** showing their
-confidence, and you answer **Yes**, **No** or **Unclear** (or press ++s++, ++d++ or ++f++).
-25 clips take a couple of minutes.
+**precision**. You watch **every match the cut-off keeps**, one recording at a time, and take
+out the ones that are not the behavior. Audit needs a cut-off: until a behavior has one,
+Audit shows only *rearing has no cutoff yet* and a **Go to Calibrate** button.
+
+1. Click a recording in the list on the left. Its matches play side by side, in a random
+   order and **without** their confidence.
+2. **Click a match that is not the behavior** to take it out. Drag across several, or hold
+   ++shift++, to take out a run of them. ++ctrl+z++ undoes.
+3. When you have scrolled to the last match, click **✓ Finish review**. The recording then
+   shows its precision, such as **88% · 7 of 8 are rearing · 1 removed**.
+
+Do this for each recording. The behavior's precision appears above the list once every
+recording is reviewed.
 
 ![The Audit view for rearing before any review: 57 instances of rearing, none reviewed yet, and the Start auditing (25 clips) button. Numbered markers sit on every control.](../../assets/user-guides/single-animal/behavior-scan/audit.png)
 
@@ -340,18 +368,17 @@ confidence, and you answer **Yes**, **No** or **Unclear** (or press ++s++, ++d++
     2. **Finish**: says you are done with the run.
     3. **Reopen**: opens a finished run again.
 
-    Once you have answered some clips, the right of the tab shows the precision for each
-    behavior and each recording, written like **0.88 (0.78–0.97, n=35)**: the share that
-    were right, the range it is likely to be in, and how many clips it rests on. Changing
-    the cut-off afterwards re-reads the precision from the clips already answered: you do
-    not answer them again.
+    A match you take out leaves the behavior's matches: **Browse**, the measures and every
+    export leave it out. Raise the cut-off afterwards and the review still stands; lower it
+    and the new matches are not reviewed yet, so the recording says how far down it was
+    reviewed until you review it again.
 
 ??? info "About this step: why audit"
-    The cut-off you chose by eye is a judgment. The audit is what turns it into a figure
-    you can report: "of the matches kept, 88% were rearing". It does not say how many
+    The cut-off you chose by eye is a judgment. The review is what turns it into a figure
+    you can report: "of the matches kept, 88% were rearing", counted over every match rather
+    than estimated from a sample. It does not say how many
     rearing bouts the scan **missed**; that needs the behavior scored by hand through the
-    whole video. If you have such videos, see [If you have hand-scored
-    videos](#if-you-have-hand-scored-videos), below.
+    whole video.
 
     The demo run in this guide has not been audited.
 
@@ -380,7 +407,8 @@ between bouts.
     2). Raising both cut-offs, adding non-examples, and auditing are how you bring them
     down to what is true. A side camera tells them apart far better.
 
-When every behavior's cut-off is chosen and checked, click **Finish**.
+When every behavior's cut-off is chosen and checked, click **Finish**. It stays greyed out
+while a behavior has no cut-off, and the line beside it names that behavior.
 
 ??? info "About this step: Snapshots"
     After you click **Finish**, export something, or use the run in a comparison, a
@@ -399,36 +427,6 @@ When every behavior's cut-off is chosen and checked, click **Finish**.
       as a new cut-off, stopped before it had finished rewriting the results, for example on
       a network drive or when the computer slept. Click **Rebuild results**, under that line.
       A bar shows its progress.
-
-## If you have hand-scored videos
-
-The audit (step 5) says how many kept matches are right. To also know how many bouts a
-search **misses**, you need videos where someone scored the behavior by hand from start to
-end, as with BORIS. **Behavior-query eval** uses them.
-
-It does not check your scan run itself. It takes a few hand-scored bouts as the examples,
-searches the same videos for the rest, and scores what it finds against your scoring: the
-average precision, precision, recall and the best F1, each beside its **null**, what the same
-score is by chance. The **lift**, the score minus its null, is the part that is real. Use it
-to learn how well DETAIL finds a behavior in your videos before you trust a scan's
-counts, and to compare embeddings or settings with a number.
-
-The demo has no hand-scored videos, so this section has no pictures.
-
-1. Bring the scoring in as a stream on each recording: **Behavior labels (interval CSV)** or
-   **Behavior labels (BORIS tabular events export)**, from the recording's page (chapter 2,
-   [step 6](set-up-recordings.md#6-optional-add-streams)), or **Import behavior labels** on
-   the **Recordings** page for many at once. **Labels are:** **Ground truth**.
-2. Click **Analysis** in the list on the left, then **New analysis**. In the **Launch an
-   analysis run** dialog, **Module:** **Behavior-query eval**.
-3. Tick the scored recordings. **Embed run:** the embedding from chapter 5.
-   **Ground-truth stream:** the stream from step 1. **Behaviors:** tick the ones to score.
-4. **Method:** `soft_knn`, the method a behavior scan uses, so the number speaks for your
-   scan. Leave the rest, and click **Run**.
-
-Open the finished run for its report: a table per behavior, precision-recall curves, and
-**Explore clips**, which plays what was found, what was missed and what was wrong. The
-[Behavior-query eval](../../modules/query_eval.md) page explains every setting.
 
 ## Next
 

@@ -114,6 +114,6 @@ def test_ensure_in_library_reuses_on_digest_and_adds_under_a_free_name():
 def test_ensure_in_library_reuses_a_preset_without_adding_an_entry():
     from detail.core.skeleton import PRESETS
 
-    ref = store.ensure_in_library(PRESETS["quadruped_side_5"][1], "anything")
-    assert ref["id"] == "quadruped_side_5"
+    ref = store.ensure_in_library(PRESETS["midline_2"][1], "anything")
+    assert ref["id"] == "midline_2"
     assert store.discover() == []

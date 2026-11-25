@@ -1,0 +1,365 @@
+"""Draw a ``report/plot_spec.PlotSpec`` with matplotlib — files, or PNG bytes for the GUI.
+
+The spec's colour roles are resolved here against the chart theme (``report/style.py``), so the
+same spec renders light or dark. 2-D panels go through the house style (``figures.styled`` /
+``save_figure``); 3-D panels share the spec's one camera and axis ranges, so a grid of them is
+one view of every recording, not several views that happen to sit side by side.
+"""
+
+import io
+import math
+import textwrap
+from collections.abc import Callable
+from pathlib import Path
+
+import numpy as np
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+from detail.report.figures import caption, rc_settings_held, save_figure, styled
+from detail.report.plot_spec import Line, PlotSpec
+from detail.report.style import DEFAULT_STYLE, FigureStyle, plot_cmap
+
+#: Width of one panel, in inches. A grid of panels is this times its column count.
+PANEL_WIDTH_IN = 2.6
+
+#: The most panels a row holds; past this a grid grows downward.
+MAX_COLUMNS = 10
+
+#: The least resolution the GUI's picture is drawn at. A figure is ``PANEL_WIDTH_IN`` per column
+#: whatever the pane, so at one fixed resolution a panel was about 290 pixels wide however few
+#: there were: a plot grouped into one panel came out 385×232 and was stretched four times over
+#: to fill the pane. :func:`screen_dpi` draws the picture at the pane's size instead; this floor
+#: is what a grid of many panels, already larger than the pane, keeps.
+SCREEN_DPI = 110
+
+#: How far the GUI's picture can be zoomed in before it is enlarged past the pixels it was drawn
+#: with. Measured on a 50-recording export at a 2060×1250 pane: drawing twice the pane's pixels
+#: costs a grouped path plot 0.3–0.45 s over drawing the pane's own, and the other kinds 0.1 s.
+ZOOM_HEADROOM = 2.0
+
+#: The most pixels the GUI's picture is drawn with, so a large pane on a dense screen cannot ask
+#: for a picture that takes seconds to encode and tens of megabytes to hold. Twice a maximised
+#: 2560×1440 pane's pixels in a 16:9 figure is about 7 MP.
+MAX_SCREEN_PIXELS = 12_000_000
+
+#: Steps a coloured line's colour is drawn in. A run of consecutive segments in one step is one
+#: polyline, so a time-coloured path costs a few dozen drawn paths rather than one per segment: a
+#: group panel of 25 half-hour paths was 225,000 segment paths, and drawing them was most of every
+#: redraw. Neighbouring steps of a 64-step colormap are closer together than the eye tells apart.
+COLOUR_STEPS = 64
+
+#: ``(stage, fraction, detail)`` — the synchronous-API progress shape (CLAUDE.md).
+Progress = Callable[[str, float, str], None] | None
+
+
+def columns_for(n: int) -> int:
+    """Panels per row for ``n`` panels: about square, never more than ``MAX_COLUMNS``."""
+    return max(1, min(MAX_COLUMNS, math.ceil(math.sqrt(n))))
+
+
+def figure_size(spec: PlotSpec) -> tuple[float, float]:
+    """``spec``'s figure as ``(width, height)`` in inches: ``PANEL_WIDTH_IN`` per column and a
+    panel's height per row, with room for the title and the colour bar."""
+    n = len(spec.panels)
+    cols = columns_for(n)
+    rows = -(-n // cols)
+    return PANEL_WIDTH_IN * cols + 0.9, _panel_height(spec) * rows + 0.5
+
+
+def screen_dpi(spec: PlotSpec, pane: tuple[float, float]) -> float:
+    """The resolution to draw ``spec`` at for a pane of ``pane`` (width, height) screen pixels.
+
+    The figure fitted to the pane, times ``ZOOM_HEADROOM``, so the fewer panels a plot has the
+    finer they are drawn; never above ``MAX_SCREEN_PIXELS`` in all, and never below
+    ``SCREEN_DPI``, which a grid larger than the pane keeps.
+    """
+    width, height = figure_size(spec)
+    fit = min(pane[0] / width, pane[1] / height)
+    most = math.sqrt(MAX_SCREEN_PIXELS / (width * height))
+    return max(SCREEN_DPI, min(fit * ZOOM_HEADROOM, most))
+
+
+def colour_steps(
+    points: np.ndarray, values: np.ndarray, vmin: float, vmax: float
+) -> tuple[list[np.ndarray], np.ndarray]:
+    """A coloured line as ``(polylines, step values)``: one polyline per run of consecutive
+    segments in one colour step, in the line's own order.
+
+    Each segment takes the mean of its two ends' ``values``, binned into ``COLOUR_STEPS`` steps
+    over ``vmin``–``vmax`` (a value outside is the end step, as a colour map clips it); a
+    segment with a non-finite end or value is not drawn. The runs keep the line's order, so
+    where a path crosses itself what lies on top is what came later, as when every segment
+    was drawn on its own. Grouped by step instead, the top step was drawn last everywhere, and
+    a speed-coloured panel read faster than it was. ``points`` is ``(n, 2)`` or ``(n, 3)``;
+    each step's value is its centre.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    mid = (values[:-1] + values[1:]) / 2.0
+    finite = np.isfinite(points)
+    drawn = finite[:-1].all(axis=1) & finite[1:].all(axis=1) & np.isfinite(mid)
+    segment = np.flatnonzero(drawn)
+    if not len(segment):
+        return [], np.zeros(0)
+    span = (vmax - vmin) or 1.0
+    step = np.clip(
+        ((mid[segment] - vmin) / span * COLOUR_STEPS).astype(np.int64),
+        0,
+        COLOUR_STEPS - 1,
+    )
+    starts = np.flatnonzero(np.r_[True, (np.diff(segment) != 1) | (np.diff(step) != 0)])
+    ends = np.r_[starts[1:], len(segment)] - 1
+    polylines = [
+        points[segment[first] : segment[last] + 2] for first, last in zip(starts, ends)
+    ]
+    centres = vmin + (step[starts] + 0.5) / COLOUR_STEPS * span
+    return polylines, centres
+
+
+def figure(
+    spec: PlotSpec, style: FigureStyle = DEFAULT_STYLE, progress: Progress = None
+):
+    """Build the matplotlib figure for ``spec``. The caller saves or closes it.
+
+    ``progress`` is told ``("drawing", fraction, panel title)`` before each panel, so a long
+    grid reports as it goes and a caller can stop it between panels.
+    """
+    n = len(spec.panels)
+    cols = columns_for(n)
+    rows = -(-n // cols)
+    with styled(style):
+        fig = plt.figure(figsize=figure_size(spec))
+        projection = "3d" if spec.three_d else None
+        axes = [
+            fig.add_subplot(rows, cols, i + 1, projection=projection) for i in range(n)
+        ]
+        has_heat = any(p.heat is not None for p in spec.panels)
+        cmap = plot_cmap(style, heat=has_heat)
+        for index, (ax, panel) in enumerate(zip(axes, spec.panels)):
+            if progress is not None:
+                progress("drawing", index / n, panel.title or spec.title)
+            _draw_panel(ax, spec, panel, style, cmap)
+        if spec.color is not None:
+            mappable = plt.cm.ScalarMappable(
+                cmap=cmap, norm=plt.Normalize(spec.color.vmin, spec.color.vmax)
+            )
+            bar = fig.colorbar(
+                mappable,
+                ax=axes,
+                shrink=0.8 if n > 1 else 0.9,
+                pad=_BAR_PAD_3D if spec.three_d else 0.05,
+            )
+            bar.outline.set_visible(False)
+            bar.set_label(spec.color.label)
+        if spec.legend and axes:
+            _legend(fig, spec, style)
+        heading = spec.title
+        if spec.note:
+            width = int(fig.get_figwidth() * _CHARS_PER_INCH)
+            heading += "\n" + textwrap.fill(spec.note, width=max(width, 40))
+        fig.suptitle(heading, x=0.0, ha="left")
+    return fig
+
+
+#: The colour bar's gap from a 3-D grid, as a fraction of the figure: a 3-D panel's z label
+#: sits outside its box, where matplotlib's 2-D gap (0.05) puts the bar over it.
+_BAR_PAD_3D = 0.12
+
+#: Roughly how many characters of the figure title's size fit in an inch, for wrapping a note.
+_CHARS_PER_INCH = 13
+
+
+def _legend(fig, spec: PlotSpec, style: FigureStyle) -> None:
+    """One entry per distinct (identity, label) over every panel, outside the plot area."""
+    from matplotlib.lines import Line2D
+
+    seen: dict[tuple[int, str], None] = {}
+    for panel in spec.panels:
+        for line in panel.lines:
+            if line.identity is not None and line.label:
+                seen.setdefault((line.identity, line.label), None)
+    handles = [
+        Line2D(
+            [], [], color=style.color(identity), lw=style.marks.line_width, label=label
+        )
+        for identity, label in sorted(seen, key=lambda key: key[0])
+    ]
+    if handles:
+        fig.legend(handles=handles, loc="outside right upper", frameon=False)
+
+
+def _panel_height(spec: PlotSpec) -> float:
+    if spec.three_d:
+        return PANEL_WIDTH_IN * 1.15
+    if spec.aspect is not None and spec.x.range and spec.y.range:
+        span_x = spec.x.range[1] - spec.x.range[0]
+        span_y = spec.y.range[1] - spec.y.range[0]
+        ratio = (span_y / span_x) * spec.aspect if span_x else 1.0
+        # The plot area is the panel width less its y-axis gutter; add the title + x-axis strip.
+        plot_w = PANEL_WIDTH_IN - 0.55
+        return max(1.2, min(PANEL_WIDTH_IN * 1.6, plot_w * ratio + 0.75))
+    return PANEL_WIDTH_IN * 0.62
+
+
+def _draw_panel(ax, spec: PlotSpec, panel, style: FigureStyle, cmap) -> None:
+    chart = style.chart
+    if panel.heat is not None:
+        heat = panel.heat
+        # A cell the animal never entered is drawn as nothing, not as the colormap's low end:
+        # on the grey ramp that was a light-grey floor the animal seemed to have covered, and on
+        # viridis it would be dark purple everywhere the animal never went.
+        grid = np.ma.masked_where(~(np.asarray(heat.grid) > 0), heat.grid)
+        ax.pcolormesh(
+            heat.x_edges,
+            heat.y_edges,
+            grid,
+            cmap=cmap,
+            vmin=spec.color.vmin if spec.color else None,
+            vmax=spec.color.vmax if spec.color else None,
+            shading="flat",
+            rasterized=True,
+        )
+    for band in panel.bands:
+        ax.fill_between(
+            band.x,
+            band.lo,
+            band.hi,
+            color=style.color(band.identity),
+            alpha=style.marks.fill_alpha,
+            lw=0,
+            zorder=1,
+            step="mid" if band.step else None,
+        )
+    for line in panel.lines:
+        _draw_line(ax, spec, line, style, cmap)
+    if spec.x.range:
+        ax.set_xlim(*spec.x.range)
+    if spec.y.range:
+        lo, hi = spec.y.range
+        ax.set_ylim((hi, lo) if spec.invert_y and not spec.three_d else (lo, hi))
+    ax.set_xlabel(spec.x.label)
+    ax.set_ylabel(spec.y.label)
+    if spec.three_d:
+        _dress_3d(ax, spec, chart)
+    elif spec.aspect is not None:
+        ax.set_aspect(spec.aspect, adjustable="box")
+    if panel.title:
+        ax.set_title(panel.title)
+    caption(ax, panel.note, style=style)
+
+
+def _draw_line(ax, spec: PlotSpec, line: Line, style: FigureStyle, cmap) -> None:
+    if line.values is None:
+        width = style.marks.line_width
+        color = (
+            style.color(line.identity)
+            if line.identity is not None
+            else style.chart.text
+        )
+        if line.z is None:
+            ax.plot(
+                line.x,
+                line.y,
+                color=color,
+                lw=width,
+                label=line.label or None,
+                drawstyle="steps-mid" if line.step else "default",
+            )
+        else:
+            ax.plot(line.x, line.y, line.z, color=color, lw=width)
+        return
+    if len(line.x) < 2:
+        return
+    # A path is drawn at the thin weight: it is dense, and a group panel overlays several.
+    width = style.marks.thin_line_width
+    vmin, vmax = spec.color.vmin, spec.color.vmax
+    axes = [line.x, line.y] + ([line.z] if line.z is not None else [])
+    points = np.column_stack([np.asarray(a, dtype=np.float64) for a in axes])
+    polylines, centres = colour_steps(points, line.values, vmin, vmax)
+    if not polylines:
+        return
+    norm = plt.Normalize(vmin, vmax)
+    if line.z is None:
+        from matplotlib.collections import LineCollection
+
+        coll = LineCollection(polylines, cmap=cmap, norm=norm, linewidths=width)
+        coll.set_array(centres)
+        ax.add_collection(coll)
+    else:
+        from mpl_toolkits.mplot3d.art3d import Line3DCollection
+
+        coll = Line3DCollection(polylines, cmap=cmap, norm=norm, linewidths=width)
+        coll.set_array(centres)
+        ax.add_collection3d(coll)
+
+
+def _dress_3d(ax, spec: PlotSpec, chart) -> None:
+    if spec.z is not None:
+        ax.set_zlabel(spec.z.label)
+        if spec.z.range:
+            ax.set_zlim(*spec.z.range)
+    if spec.y.range and spec.invert_y:
+        lo, hi = spec.y.range
+        ax.set_ylim(hi, lo)
+    if spec.camera is not None:
+        ax.view_init(elev=spec.camera.elev, azim=spec.camera.azim)
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.set_pane_color((0, 0, 0, 0))
+        axis.line.set_color(chart.axis)
+    ax.tick_params(colors=chart.text_secondary)
+    if spec.aspect is not None and spec.x.range and spec.y.range:
+        span_x = spec.x.range[1] - spec.x.range[0]
+        span_y = (spec.y.range[1] - spec.y.range[0]) * spec.aspect
+        top = max(span_x, span_y) or 1.0
+        ax.set_box_aspect((span_x / top, span_y / top, 1.0))
+
+
+def render(
+    spec: PlotSpec,
+    out_stem: Path | str,
+    *,
+    formats: tuple[str, ...] = ("png",),
+    theme: str = "light",
+    progress: Progress = None,
+) -> list[Path]:
+    """Write ``spec`` as ``<out_stem>.<fmt>`` for each format; returns the paths.
+
+    ``progress`` hears ``drawing`` per panel (:func:`figure`), then ``writing``.
+    """
+    style = DEFAULT_STYLE.with_theme(theme)
+    Path(out_stem).parent.mkdir(parents=True, exist_ok=True)
+    fig = figure(spec, style, progress)
+    listed = ", ".join(formats)
+    if progress is not None:
+        progress("writing", 0.0, listed)
+    paths = save_figure(fig, out_stem, formats)
+    if progress is not None:
+        progress("writing", 1.0, listed)
+    return paths
+
+
+def render_png(
+    spec: PlotSpec,
+    *,
+    dpi: float,
+    theme: str = "light",
+    progress: Progress = None,
+) -> bytes:
+    """``spec`` as PNG bytes at ``dpi`` — the GUI's picture. ``progress`` hears ``drawing`` per
+    panel (:func:`figure`).
+
+    ``dpi`` has no default: a picture drawn for a pane takes :func:`screen_dpi` of that pane,
+    and a fixed one is what drew a one-panel plot at 385×232 and stretched it to fill the page.
+    """
+    style = DEFAULT_STYLE.with_theme(theme)
+    # Held from the first panel to the save: saved under another thread's house style
+    # (``savefig.bbox: tight``), the picture is cropped to another size than ``dpi`` drew.
+    with rc_settings_held():
+        fig = figure(spec, style, progress)
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format="png", dpi=dpi, facecolor=fig.get_facecolor())
+        plt.close(fig)
+    return buffer.getvalue()
