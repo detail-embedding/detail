@@ -1,4 +1,4 @@
-# Detail
+# Detail: species-agnostic, generalizable animal behavior analysis using foundation model embeddings
 
 [![Tests](https://github.com/detail-embedding/detail/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/detail-embedding/detail/actions/workflows/ci.yml)
 [![Docs](https://github.com/detail-embedding/detail/actions/workflows/docs.yml/badge.svg?branch=main)](https://detail-embedding.github.io/detail/)
