@@ -97,7 +97,8 @@ ALIGNED_KEY = "interpret/clip_window_aligned"
 ALIGN_CHECKING = "Reading this clip's keypoints…"
 ALIGN_TIP = (
     "Turn the footage, and the masks and keypoints with it, so the animal's body points up, "
-    'frame by frame. A frame with no body axis plays as recorded, marked "no axis".'
+    "frame by frame. A side-view embedding is flipped where it flipped instead, never turned. "
+    'A frame with no body axis plays as recorded, marked "no axis".'
 )
 
 

@@ -86,6 +86,7 @@ from detail.api.clip_views import (
     draw_pose_pane,
     frame_turn,
     mark_no_axis,
+    mirror_as_embedded,
     turn_mask,
     turn_matrix,
     turn_picture,
@@ -197,8 +198,10 @@ class MontageLayers:
     trail_points: tuple[str, ...] | None = None
     #: **Aligned**: each tile frame turned about the animal's middle so its body points up
     #: (``clip_views.turn_matrix``, the clip window's and the live montage's own turn), the crop
-    #: kept at its as-recorded size. A frame with no body axis is drawn as recorded and marked;
-    #: a run with no keypoints or heading definition draws every frame as recorded.
+    #: kept at its as-recorded size; a side-view (``mirror``) run's tile is the as-recorded one,
+    #: mirrored where its embedding mirrored the frame (``clip_views.mirror_as_embedded``), never
+    #: turned. A frame with no body axis (on a side view, no embedded row) is drawn as recorded
+    #: and marked; a run with no keypoints or heading definition draws every frame as recorded.
     aligned: bool = False
 
     def __post_init__(self) -> None:
@@ -229,7 +232,9 @@ class MontageLayers:
         """The read these layers need, as the clip window's own settings: the mask is never
         tinted onto the footage here (a tile outlines it at its own scale), the trails are read
         when a tick asks for them, and the pose is never body-aligned (an **Aligned** tile is
-        turned after it is drawn, so the pose turns with everything else)."""
+        turned after it is drawn, so the pose turns with everything else). ``aligned`` is
+        carried so the read fetches a side-view run's flip (``ClipFrame.flip``); the drawers
+        here never read it."""
         return ClipViewSettings(
             masks_on_frame=False,
             points_on_frame=self.raw and self.keypoints,
@@ -237,6 +242,7 @@ class MontageLayers:
             trail_points=self.trail_points,
             mask_trail=bool(self.mask_trail),
             pose_aligned=False,
+            aligned=self.aligned,
         )
 
 
@@ -753,6 +759,12 @@ class ClusterMontage:
         x0, y0, x1, y1 = prepared.crop
         fill = (0, 0, 0) if layers.raw else (255, 255, 255)
         if layers.aligned and read.axis is not None:
+            if read.flip is not None:
+                tile = self._as_recorded(
+                    read, clip.subject, picture, layers, prepared.crop, size, fill
+                )
+                mirrored = mirror_as_embedded(tile, read.flip)
+                return mark_no_axis(tile) if mirrored is None else mirrored
             ends = frame_turn(read, int(clip.subject))
             if ends is None:
                 return mark_no_axis(
