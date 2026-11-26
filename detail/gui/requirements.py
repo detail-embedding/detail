@@ -1541,6 +1541,11 @@ _COLOUR_ONLY_SWATCHES: dict[str, str] = {
     "behavior_query.py:ClipExampleDialog._refresh_clips": (
         "not yet: the same behavior colour beside each example clip (same reason)"
     ),
+    "recording_visualization.py:RecordingVisualizationWindow._set_cut": (
+        "the row names its cluster by number in text beside the swatch, so colour is never "
+        "the only identity; the swatch keys the colour the exported video draws that cluster "
+        "in, and the video has no patterns, so a pattern here would key nothing it shows"
+    ),
 }
 
 
@@ -1666,6 +1671,8 @@ def the_package_animates_nothing(package) -> None:
 _CONFIRMATIONS: dict[str, str] = {
     # --- deletes: the case the rule was written for -------------------------- #
     "comparison.py:ComparisonDetailPage._delete": "deletes a comparison and everything it wrote",
+    "recording_visualization.py:RecordingVisualizationWindow._delete_saved": "deletes a saved "
+    "visualization recipe (its range, cut and ticks)",
     "pages.py:AnalysisRunDetailPage._delete": "deletes an analysis run and its outputs",
     "pages.py:DatasetDetailPage._delete": "deletes a dataset and its images/labels",
     "pages.py:DistillRunDetail._delete": "deletes a distill run",
@@ -1715,6 +1722,11 @@ _CONFIRMATIONS: dict[str, str] = {
 #: Dialogs deliberately opened non-modally, and why. A run config is modal so the window it
 #: launches from cannot be touched mid-launch; a *report* is not a launch.
 _NON_MODAL_DIALOGS: dict[str, str] = {
+    "recording_visualization.py": (
+        "the Recording Embedding and Location Visualization window is a player beside "
+        "INTERPRET, not a config: a recording plays in it while the tree behind it is read and "
+        "named, and a cut drawn here is compared against the tree there (§22)"
+    ),
     "clip_pane_window.py": (
         "the enlarged Masks / Keypoints pane (`open_pane_window`) is a companion view of the "
         "clip window, not a config: it follows that window's ticks live, so the clip window has "

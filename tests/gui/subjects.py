@@ -727,7 +727,22 @@ def _providers(experiment, recording) -> dict:
         # walk's (`a_clustering_workspace` opens one).
         "interpret": lambda: _an_interpret_page_with_nothing_loaded(experiment),
         "node": lambda: 0,
+        # The Recording visualization window (§22) opens on a clustering run and the
+        # recordings it was fitted on.
+        "run": lambda: _AVisualizedRun(),
+        "recording_ids": lambda: [recording.id],
     }
+
+
+class _AVisualizedRun:
+    """The least the Recording visualization window (§22) reads of its run as it opens: an id
+    and its saved visualizations, none. Its load (off the UI thread) then reports the stand-in's
+    missing fit as its picture's message."""
+
+    id = "an_01"
+
+    def visualizations(self) -> list:
+        return []
 
 
 def _an_interpret_page_with_nothing_loaded(experiment):

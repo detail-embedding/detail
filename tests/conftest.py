@@ -1141,6 +1141,79 @@ def fitted_temporal(experiment_dir, recording_dir, _temporal_fit_template):
     return Experiment(experiment_dir), run_id
 
 
+#: The visualizable recording's video: a small frame, so drawing and encoding stay cheap.
+VIZ_W, VIZ_H = 64, 48
+
+
+@pytest.fixture
+def visualizable_run(fitted_temporal):
+    """``fitted_temporal`` with what a recording visualization reads besides the fit (§22
+    "Recording visualization"): a video under every timestamp, and a detection + tracking run
+    (``det_01`` / ``track_01``, the tracking run the embedding names) whose one animal is a
+    square mask moving left to right. Returns ``(experiment, run)``.
+
+    Built on the shared fit, so it starts no run of its own (`tests/test_real_run_budget.py`).
+    """
+    import json
+
+    import cv2
+    from pycocotools import mask as mask_utils
+
+    from detail.storage import recording as recording_store
+    from detail.storage.zarr_io import AssignmentPartWriter, DetectionPartWriter
+
+    experiment, run_id = fitted_temporal
+    rec_dir = experiment.dir / "recordings" / "recording_001"
+    data = recording_store.read_recording(rec_dir)
+    t_ns = recording_store.load_active_timestamps(rec_dir, data, 0).values
+    n = len(t_ns)
+    data["video"]["resolution"] = [VIZ_W, VIZ_H]
+    data["detection_runs"] = [{"id": "det_01", "status": "complete"}]
+    data["tracking_runs"] = [
+        {"id": "track_01", "status": "complete", "detection_run_id": "det_01"}
+    ]
+    recording_store.write_recording(rec_dir, data)
+
+    video = rec_dir / "video" / "part_001.mp4"
+    writer = cv2.VideoWriter(
+        str(video), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (VIZ_W, VIZ_H)
+    )
+    for i in range(n):
+        writer.write(np.full((VIZ_H, VIZ_W, 3), 40 + (i % 50), np.uint8))
+    writer.release()
+
+    det_dir = rec_dir / "detections" / "det_01"
+    det_dir.mkdir(parents=True, exist_ok=True)
+    (det_dir / "job.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "complete",
+                "mask_resolution": [VIZ_H, VIZ_W],
+                "job": {"downsampling_run_id": None},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with DetectionPartWriter(det_dir / "part_001.zarr") as det:
+        for i in range(n):
+            x0 = 4 + int(40 * i / max(n - 1, 1))
+            mask = np.zeros((VIZ_H, VIZ_W), np.uint8)
+            mask[16:32, x0 : x0 + 16] = 1
+            rle = mask_utils.encode(np.asfortranarray(mask))["counts"].decode("ascii")
+            box = (x0 / VIZ_W, 16 / VIZ_H, (x0 + 16) / VIZ_W, 32 / VIZ_H)
+            det.add_row(i, int(t_ns[i]), 0, "mouse", 0.9, box, rle)
+    trk_dir = rec_dir / "tracking" / "track_01"
+    (trk_dir / "assignments").mkdir(parents=True, exist_ok=True)
+    (trk_dir / "track.yaml").write_text(
+        yaml.dump({"detection_run_id": "det_01", "class_name": None}), encoding="utf-8"
+    )
+    with AssignmentPartWriter(trk_dir / "assignments" / "part_001.zarr") as assign:
+        for _ in range(n):
+            assign.add_object_id(0)
+    return experiment, experiment.temporal_clustering_run(run_id)
+
+
 _SESSION_LENGTHS_MODULE = "detail_test_session_lengths"
 
 

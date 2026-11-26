@@ -98,6 +98,7 @@ detail/
 │   │                     # reads detect.yaml, never a marker
 │   ├── skeleton_library.py  # §26: the machine-wide skeleton library, <model cache>/skeletons/sk_NN/
 │   ├── recording.py        # recording.yaml read/write + TimestampMap + load_active_timestamps[_cached]
+│   ├── recording_visualizations.py # §22 saved visualization recipes beside their clustering run
 │   ├── read_cache.py     # cached_document / cached_read / pinned() — the round-trip budget;
 │   │                     # computing(key): concurrent misses wait for one computation;
 │   │                     # forget_document(path): a writer drops its own entry
@@ -216,6 +217,9 @@ detail/
 │                         # location_measures.py (a comparison's locations source, and the one
 │                         # path rule: smoothed_segments / path_breaks); location_plots.py (a
 │                         # location export's paths, occupancy, speed and body as a PlotSpec)
+│                         # recording_visualization.py: §22 a recording visualization's pure half —
+│                         # layout_for (panels by video shape and tile), type sizes, montage
+│                         # tiles, the tree cut (display_heights / cut_nodes), frame colours
 ├── cluster_methods/      # TemporalClusterMethod implementations: dtw_finch, codebook_viterbi;
 │                         # _common.py the steps they share (kmeans_level, blas_safe_openmp).
 │                         # POSE_CLUSTER_METHODS is empty since pose clustering was removed
@@ -285,6 +289,10 @@ detail/
 │   ├── spatial_categories.py  # the four spatial-setup categories, as one table (§10)
 │   ├── authored_run.py   # AuthoredRun(AnalysisRun) — the §21 mutable-run base; label resolution,
 │   │                     # fold_legacy_names, labelled_instances (§22: labels drive the output)
+│   ├── recording_visualization.py # §22 a recording beside its pose space and location: load_data
+│   │                     # (VizData, through the fit, labelled_runs and Location Export's
+│   │                     # compute), recode, FrameReader, estimate, export_montage (parallel
+│   │                     # chunks joined by storage/video.concat_mp4); _draw.py's Canvas draws
 │   ├── clip_edits.py     # take_out_clips / put_back_clips / taken_out (temporal runs) and the
 │   │                     # per-member override labelled_instances hands instances_for
 │   ├── clip_review.py    # finish_review (a cluster's census) / review_precision / review_by_cluster
@@ -481,6 +489,8 @@ detail/
     │                     # a run, shared by the page and its cluster windows; an undo is an
     │                     # inverse write by id (AuthoredRun.restore_labels)
     ├── node_cache_jobs.py# cache builds owned by the app, not the page that started them
+    ├── recording_visualization.py # INTERPRET's Visualize recordings… window (non-modal),
+    │                     # TreeCut, ExportVisualizationDialog (one or a montage, measured first)
     ├── preview_jobs.py   # §3 the app's preview queue: one build at a time, status-bar bar
     ├── node_audit.py     # NodeAuditBlock: AUDIT's figure in the label bar, Act on it ▾
     ├── label_check.py    # clustering AUDIT: the list of labels and their clusters, the page

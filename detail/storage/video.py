@@ -16,6 +16,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Iterator
+from fractions import Fraction
 from pathlib import Path
 
 import av
@@ -1011,11 +1012,179 @@ def _try_codec(
     return None
 
 
+class _ExactH264Writer:
+    """An H.264 ``.mp4`` written through PyAV's linked ``libx264`` with an exact BT.709
+    conversion (:func:`_bt709_planes`), in the ``cv2.VideoWriter`` shape (``write`` a BGR frame,
+    ``release``), so a caller never knows which it holds.
+
+    High profile, ``yuv420p``, CRF 23, preset ``veryfast``, ``+faststart``: what PowerPoint,
+    QuickTime and every browser play. The stream is tagged BT.709 limited range, as written.
+    ``yuv420p`` needs even dimensions, so an odd last row or column is dropped.
+    """
+
+    def __init__(self, out_path: Path | str, fps: float, width: int, height: int):
+        self._width, self._height = width // 2 * 2, height // 2 * 2
+        if self._width < 2 or self._height < 2:
+            raise ValueError(f"a {width}x{height} frame is too small to encode")
+        # PyAV opens the file only when the first packet is muxed; creating it here makes an
+        # unwritable destination fail at open, where the caller handles it, not mid-export.
+        with open(out_path, "wb"):
+            pass
+        self._container = av.open(
+            str(out_path), "w", format="mp4", options={"movflags": "+faststart"}
+        )
+        stream = self._container.add_stream(
+            "libx264", rate=Fraction(float(fps)).limit_denominator(1001)
+        )
+        stream.width, stream.height, stream.pix_fmt = (
+            self._width,
+            self._height,
+            "yuv420p",
+        )
+        stream.options = {
+            "crf": "23",
+            "preset": "veryfast",
+            "profile": "high",
+            "x264-params": "colorprim=bt709:transfer=bt709:colormatrix=bt709:range=tv",
+        }
+        cc = stream.codec_context
+        cc.colorspace, cc.color_range, cc.color_primaries, cc.color_trc = 1, 1, 1, 1
+        self._stream = stream
+        self._open = True
+
+    def isOpened(self) -> bool:  # noqa: N802 — the cv2.VideoWriter spelling
+        return self._open
+
+    def write(self, frame_bgr: np.ndarray) -> None:
+        bgr = np.ascontiguousarray(frame_bgr[: self._height, : self._width])
+        frame = av.VideoFrame.from_ndarray(_bt709_planes(bgr), format="yuv420p")
+        for packet in self._stream.encode(frame):
+            self._container.mux(packet)
+
+    def release(self) -> None:
+        if not self._open:
+            return
+        self._open = False
+        try:
+            for packet in self._stream.encode():
+                self._container.mux(packet)
+        finally:
+            self._container.close()
+
+
+#: BT.709 luma weights: the matrix an HD player assumes, and the one the stream is tagged with.
+_KR, _KB = 0.2126, 0.0722
+
+
+def _bt709_planes(bgr: np.ndarray) -> np.ndarray:
+    """``bgr`` (H, W, 3) as limited-range BT.709 ``yuv420p`` planes, ``(H * 3 / 2, W)``.
+
+    Converted here rather than by swscale's default path, which left pure white at
+    (251, 253, 250) after a decode — a faint box on a white slide. Exact arithmetic puts white at
+    Y=235, U=V=128 and black at Y=16, which any player decodes to 255 and 0 whatever matrix it
+    assumes, since a neutral grey carries no chroma.
+    """
+    planes = bgr.astype(np.float32) / 255.0
+    b, g, r = planes[..., 0], planes[..., 1], planes[..., 2]
+    y = _KR * r + (1 - _KR - _KB) * g + _KB * b
+    h, w = y.shape
+
+    def sub(c: np.ndarray) -> np.ndarray:
+        c = c.reshape(h // 2, 2, w // 2, 2).mean(axis=(1, 3))
+        return np.clip(np.rint(128 + 224 * c), 0, 255).astype(np.uint8)
+
+    luma = np.clip(np.rint(16 + 219 * y), 0, 255).astype(np.uint8)
+    cb = sub((b - y) / (2 * (1 - _KB)))
+    cr = sub((r - y) / (2 * (1 - _KR)))
+    return np.concatenate([luma.reshape(-1), cb.reshape(-1), cr.reshape(-1)]).reshape(
+        h * 3 // 2, w
+    )
+
+
+def concat_mp4(parts: list[Path | str], out_path: Path | str) -> Path:
+    """Join H.264 ``.mp4`` parts written by :func:`open_video_writer` at one size and rate into
+    ``out_path`` by copying their packets — no re-encode, no FFmpeg process (Tenet 15).
+
+    Each part's timestamps are shifted past the frames before it, so the joined file plays
+    through without a gap or a jump.
+
+    Raises:
+        ValueError: No parts, or parts that differ in size, codec or time base.
+    """
+    if not parts:
+        raise ValueError("no parts to join")
+    first = av.open(str(parts[0]))
+    template = first.streams.video[0]
+    shape = (
+        template.codec_context.name,
+        template.width,
+        template.height,
+        template.time_base,
+    )
+    tick = int(round(1 / (float(template.average_rate) * float(template.time_base))))
+    out = av.open(str(out_path), "w", format="mp4", options={"movflags": "+faststart"})
+    try:
+        ost = out.add_stream_from_template(template)
+        first.close()
+        offset = 0
+        for part in parts:
+            inp = av.open(str(part))
+            try:
+                stream = inp.streams.video[0]
+                here = (
+                    stream.codec_context.name,
+                    stream.width,
+                    stream.height,
+                    stream.time_base,
+                )
+                if here != shape:
+                    raise ValueError(
+                        f"{part} is {here}, not {shape}: parts must match to join"
+                    )
+                frames = 0
+                for packet in inp.demux(stream):
+                    if packet.dts is None:
+                        continue
+                    packet.pts += offset
+                    packet.dts += offset
+                    packet.stream = ost
+                    out.mux(packet)
+                    frames += 1
+                offset += frames * tick
+            finally:
+                inp.close()
+    finally:
+        out.close()
+    return Path(out_path)
+
+
+@functools.cache
+def _pyav_h264() -> bool:
+    """Whether this PyAV build links an H.264 encoder (``libx264``)."""
+    try:
+        av.codec.Codec("libx264", "w")
+    except (av.error.FFmpegError, ValueError):
+        return False
+    return True
+
+
 def open_video_writer(
-    out_path: Path | str, fps: float, width: int, height: int
-) -> tuple[cv2.VideoWriter, str]:
+    out_path: Path | str,
+    fps: float,
+    width: int,
+    height: int,
+    *,
+    exact_colour: bool = False,
+) -> tuple[cv2.VideoWriter | _ExactH264Writer, str]:
     """Open a ``.mp4`` writer, preferring H.264 (``avc1``) and falling back to
     ``mp4v`` when the installed cv2 lacks the libx264 encoder (§4).
+
+    ``exact_colour`` writes H.264 through PyAV's ``libx264`` instead, converted to BT.709
+    limited range here (``_bt709_planes``) and tagged so, so pure white and black survive a
+    decode, which a picture meant for a slide's background needs. A genuine choice, off by
+    default: the preview cache is encoded through this writer, and changing how every caller
+    converts would mix previews made before and after (CLAUDE.md, *Expensive derived data*).
+    Where PyAV cannot encode H.264 it takes the path below, colours as cv2 converts them.
 
     On a build without H.264 the first attempt is *expected* to fail, and cv2 plus its bundled
     FFmpeg print four alarming error lines when it does — once per writer, so a clip export buries
@@ -1027,6 +1196,13 @@ def open_video_writer(
     no H.264" from "this path is unwritable", which fails at every codec and must keep raising.
     """
     global _h264_unavailable
+    if exact_colour and _pyav_h264():
+        try:
+            return _ExactH264Writer(out_path, fps, width, height), _PREFERRED_CODEC
+        except (OSError, av.error.FFmpegError) as exc:
+            raise RuntimeError(
+                f"could not open an H.264 writer for {out_path}: {exc}"
+            ) from exc
     if not _h264_unavailable:
         writer = _try_codec(out_path, _PREFERRED_CODEC, fps, width, height, quiet=True)
         if writer is not None:

@@ -78,6 +78,10 @@ FILE_TIER = {
     # Both read `detail/gui` as text (ast) and build no widget.
     "tests/gui/test_dialog_close_scan.py": "unit",
     "tests/gui/test_menu_once_scan.py": "unit",
+    # --- recording visualization (§22): draws frames, encodes video, spawns renderers -- #
+    "tests/api/test_recording_visualization.py": "slow",
+    "tests/storage/test_video_exact_colour.py": "slow",
+    "tests/test_cli_recording_visualization.py": "slow",
     # --- real subprocess workloads: a fresh interpreter that imports `detail` ------- #
     "tests/core/test_protocols.py": "slow",
     "tests/core/test_registries.py": "slow",

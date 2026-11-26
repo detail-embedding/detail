@@ -350,12 +350,18 @@ def _spatial_def(recording_dir, kind: str, entry: dict) -> tuple:
     return entry["id"], entry["name"], pk, interval
 
 
-def _plan_groups(parts, tracking_dir: Path, offsets: list[int]) -> list[tuple]:
+def _plan_groups(
+    parts,
+    tracking_dir: Path,
+    offsets: list[int],
+    frames: tuple[int, int] | None = None,
+) -> list[tuple]:
     """Per detection part: ``(part, {(frame, track): [row, ...]}, {(frame, track): t_ns})``.
 
     The groups a row of each table is made from, read from the three small columns that name
     them, so what is sampled and what is counted for progress are settled before a mask is
-    decoded. Frames are recording-wide, so a key is unique across parts.
+    decoded. Frames are recording-wide, so a key is unique across parts. ``frames=(first,
+    stop)`` keeps only the groups on recording-wide frames ``first <= f < stop``.
     """
     planned = []
     for part_index, det_part in parts:
@@ -366,7 +372,11 @@ def _plan_groups(parts, tracking_dir: Path, offsets: list[int]) -> list[tuple]:
         t_ns = np.asarray(reader.column("t_ns"))
         offset = offsets[part_index] if part_index < len(offsets) else offsets[-1]
         groups: dict[tuple[int, int], list[int]] = defaultdict(list)
-        for i in np.where(object_id >= 0)[0]:
+        keep = object_id >= 0
+        if frames is not None:
+            frame_global = frame_idx[: len(object_id)].astype(np.int64) + offset
+            keep = keep & (frame_global >= frames[0]) & (frame_global < frames[1])
+        for i in np.where(keep)[0]:
             groups[(int(frame_idx[i]) + offset, int(object_id[i]))].append(int(i))
         times = {key: int(t_ns[rows[0]]) for key, rows in groups.items()}
         planned.append((det_part, dict(groups), times))
@@ -401,6 +411,7 @@ def compute_location_tables(
     on_progress: Callable[[int, int], None] | None = None,
     options: LocationExportConfig | None = None,
     keypoint_run_id: str | None = None,
+    frames: tuple[int, int] | None = None,
 ) -> LocationTables:
     """Compute the three tables for a completed tracking run of ``recording``, and with
     ``keypoint_run_id`` (a keypoint track run of that tracking run) a fourth, ``keypoints``.
@@ -418,6 +429,11 @@ def compute_location_tables(
     denominator is the count of *assigned* detection rows — the only rows that
     become groups — so the bar reaches 100% even when an arena filter leaves some
     detections unlinked.
+
+    ``frames=(first, stop)`` keeps only recording-global frames ``first <= f < stop``: a
+    stretch of a long recording without decoding every mask in it (a recording
+    visualization, §22, shows a minute of a half-hour session). Unset, every frame. The export
+    and the analysis run never set it.
     """
     options = options if options is not None else LocationExportConfig()
     recording_dir = Path(recording.dir)
@@ -461,7 +477,7 @@ def compute_location_tables(
     # Play order, with each part's play index: after a part move the sorted folder listing is
     # not the order the parts play in, and the offsets are indexed by play position.
     parts = recording_store.parts_in_play_order(recording_dir, detection_dir)
-    planned = _plan_groups(parts, tracking_dir, offsets)
+    planned = _plan_groups(parts, tracking_dir, offsets, frames)
     kept = (
         _sampled_keys(planned, options.sample_fps)
         if options.sample_fps is not None

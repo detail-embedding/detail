@@ -8594,6 +8594,72 @@ page (`clip_views.pose_notes`). Each montage keeps its own choice (`LiveMontage(
 required, so no page silently shares another's); the clip window keeps `interpret/clip_window_aligned`.
 Measured on a real run, a turned tile frame stays well inside the ~2.2 ms a frame 30 tiles × 15 fps leave the one picture worker on a first pass; later passes are served from `ClipTiles`' drawn-tile cache.
 
+### Recording visualization
+
+**A recording, or a range of it, played beside its path through pose space and its location**
+(`api/recording_visualization.py`, `gui/recording_visualization.py`, `detail analysis
+visualize-recording`, INTERPRET's **Visualize recordings…** beside **Find**). The video with its
+mask and keypoints, a thin ethogram, the behaviour the animal is in now and for how long, the last
+2 s of outlines (egocentric, as Figure 5's), the path through pose space over a grey cloud of
+every pose, and optionally the path over time from Location Export: one picture per frame, made
+for slides, on black or on white.
+
+- **A visualization is a recipe, never a video.** `RecordingVisualizationConfig`
+  (`configs/recording_visualization.py`) is the whole of it, saved by **Save visualization** as
+  `analysis/<an_NN>/visualizations/<viz_id>/visualization.yaml` (`schema_version: 1` first,
+  written through `core.atomic.replace`). `viz_id` is `viz_NNN`, minted by the store. Fields:
+  `recording_id`; `track_id`; `start_s` and `end_s` (null both = the full recording; one range
+  per recipe); `clusters` (`named` or `cut`); `cut_height` and `cut_included` (the cut's numbers
+  drawn in colour, at most `MAX_COLOURED` = 8) when `clusters: cut`; `location` (bool);
+  `trail_s` (2.0), `ghost_s` (8.0), `ethogram_half_s` (10.0), `location_window_s` (10.0).
+  Nothing rendered is stored: a montage re-renders from recipes, so a recipe never goes stale
+  when names change, and the experiment holds no video (§3 *Compatibility contract* is not
+  engaged). Deleting a clustering run deletes its recipes with it.
+- **Labels, one path for both modes.** `NodeView.labelled_runs(node_names)` gives a recording's
+  labelled spans for any naming, through the run's own resolution (deepest named ancestor,
+  clip edits applied). `named` passes the run's names; `cut` passes the cut's nodes as `1..n`.
+  The cut descends from the root, splitting every node whose **display height** is above
+  `cut_height`; a node's display height is the maximum of its own merge height and its
+  children's, because `ClusterTree` heights are monotone only within a transition (above), and
+  a cut on raw heights could split a child and keep its parent. Clusters are numbered by size,
+  largest first. A frame in no coloured cluster is drawn grey (`other` in `cut`, `unnamed` in
+  `named`); a frame with no embedding is drawn as a gap.
+- **Pose space.** The first two principal components of the features the clusters were found
+  in: per-frame embeddings, unit-normalised and mean-pooled over the method's `window_s` by its
+  own `segmentation.build_features`, with the PCA fitted on the fit's codebook sample.
+  A method without a frame window (`dtw_finch`) uses per-frame unit embeddings and a PCA fitted on
+  an even subsample of the run's recordings, and the window says so. The cloud is that sample.
+- **Location.** Location Export's own compute (`analysis/locations.compute_location_tables`),
+  run in memory for the recipe's recording and the embedding run's tracking run: the track's
+  mask centroid per frame, in mm when the recording is calibrated and px otherwise (the panel's
+  scale bar says which). Drawn as Location Export's *path over time* (x, y on the floor, time
+  up), the last `location_window_s`, coloured by behaviour, over its shadow on the floor.
+- **Layout follows the picture** (`layout_for(tile_w, tile_h, aspect, location)`). Two
+  arrangements are tried — the video across the top with the panels below (*stack*), and the
+  video down the left with the panels beside it (*side*) — and the one giving the video more area
+  wins, with the panels keeping at least `MIN_PANEL_SHARE` (0.30) of the free direction. The
+  panels fill what is left as a row, a column or a 2x2 block by its aspect. Every font size is a
+  multiple of the tile's shorter side over 1080, never under its floor (behaviour 16 px, labels
+  11 px, time 10 px), so a montage tile stays readable.
+- **Themes.** `dark` (pure black) and `light` (pure white), each with its own steps of the
+  categorical palette. Both are exact in the file: `storage/video.open_video_writer(exact_colour=True)` writes
+  H.264 through PyAV, converting RGB to BT.709 limited-range YUV itself and tagging the stream, so white decodes to 255 and black to 0
+  (swscale's conversion left white at 251, 253, 250 — a faint box on a white slide).
+- **Export.** One recipe, or a **montage** of up to 9 recipes from any experiment, side by side
+  on one clock, filling 1920x1080: 1 full screen, 2 across (960x1080 each), 3–4 as 2x2, 5–6 as
+  3x2, 7–9 as 3x3. Each tile is laid out for its own size, not scaled down; one that ends first
+  holds its last frame, dimmed. Real time at 50 fps (every second frame) by default, or 100 fps,
+  or half speed. Frames are rendered in parallel chunks by worker processes that each load the
+  recipe themselves (spawn-safe), and the chunks are joined by copying packets, never
+  re-encoded. **Before exporting** the estimate is measured, not guessed: a few frames of each
+  recipe are rendered and encoded, and their time per frame and bytes per frame are scaled to
+  the export's length, worker count and themes.
+- **Surfaces.** API `RecordingVisualization` (from `TemporalClusteringRun.visualizations()` /
+  `.visualization(config)`): `frame(fno, theme)`, `export(path, theme, progress)`,
+  `estimate(...)`, and `export_montage(recipes, path, theme, progress)`; CLI `detail analysis
+  visualize-recording` (create, list, export, `--montage`); GUI the window above. Every export
+  takes the `(stage, fraction, detail)` progress callback and every caller drives it.
+
 ### Every node's clips
 
 **Every node with members has clips, and the cache lists them.** `NodeCacheMixin.clips(node,

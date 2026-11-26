@@ -742,6 +742,22 @@ class NodeInterpretTab(QWidget):
         self._find.found_changed.connect(self._show_found)
         self._find.rings_changed.connect(self._icicle_rings)
         self._find.picked.connect(self.select)
+        # Beside Find: whole recordings (or ranges of them) played through pose space and
+        # location, in their own window (§22 "Recording visualization").
+        self._visualize = QPushButton("Visualize recordings…")
+        self._visualize.setToolTip(
+            "Play a recording, or part of one, beside its path through pose space, its "
+            "behaviours and its location — on black or white, and export it as video."
+        )
+        self._visualize.clicked.connect(self._open_visualization)
+        # A snapshot is frozen (§21), and the window saves its visualizations into the run.
+        set_available(
+            self._visualize,
+            bool(getattr(run, "editable", False)),
+            "This is a snapshot of the run as it was; open the live run to visualize it.",
+        )
+        self._find.add_beside_find(self._visualize)
+        self._visualization_window = None
         key_line.addWidget(self._find, 1)
         self._zoom_in = QPushButton("+")
         self._zoom_in.setToolTip("Zoom in (or scroll the wheel over the tree)")
@@ -2323,6 +2339,28 @@ class NodeInterpretTab(QWidget):
                 except TypeError:
                     pass  # never connected, or already gone
         self._montage.clear_blocked()
+
+    def _open_visualization(self) -> None:
+        """The Recording Embedding and Location Visualization window for this run: one at a
+        time, raised when it is already open (§22 "Recording visualization")."""
+        from detail.gui.recording_visualization import open_visualization_window
+
+        if self._visualization_window is not None:
+            self._visualization_window.raise_()
+            self._visualization_window.activateWindow()
+            return
+        window = open_visualization_window(
+            self._experiment,
+            self._run,
+            list(self._run.state().source_recording_ids),
+            parent=self,
+        )
+        window.finished.connect(lambda _r: self._forget_visualization(window))
+        self._visualization_window = window
+
+    def _forget_visualization(self, window) -> None:
+        if self._visualization_window is window:
+            self._visualization_window = None
 
     # --- cluster windows -------------------------------------------------------------------
 
