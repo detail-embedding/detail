@@ -155,6 +155,10 @@ class LocationPlotsPanel(QWidget):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         column.addWidget(self._status)
+        # The status line is shared: a draw's error and an export's result both land here, and
+        # a redraw may clear only the first. A setting change redraws after a debounce, so an
+        # export started at once can finish first; clearing its "Wrote …" hid the result.
+        self._status_is_draw_error = False
 
         self._picture = ImageView(zoomable=True)
         # The controls fold by their grip to a strip reading "Plot settings"; the picture
@@ -194,7 +198,7 @@ class LocationPlotsPanel(QWidget):
                 open_run,
                 self._on_opened,
                 label="Reading the run…",
-                on_error=self._failed,
+                on_error=lambda exc: self._show_message(str(exc)),
             )
 
     def _on_opened(self, opened) -> None:
@@ -300,13 +304,15 @@ class LocationPlotsPanel(QWidget):
             dpi = plot_render.screen_dpi(spec, pane)
             return plot_render.render_png(spec, dpi=dpi, theme=theme, progress=emit)
 
-        self._status.setText("")
+        if self._status_is_draw_error:
+            self._status.setText("")
+            self._status_is_draw_error = False
         run_progress(
             self._picture,
             work,
             self._show,
             label="Drawing…",
-            on_error=self._failed,
+            on_error=self._draw_failed,
             supersedes="location-plot",
         )
 
@@ -322,8 +328,14 @@ class LocationPlotsPanel(QWidget):
         pixmap.loadFromData(png, "PNG")
         self._picture.set_frame(pixmap)
 
-    def _failed(self, exc: BaseException) -> None:
+    def _draw_failed(self, exc: BaseException) -> None:
         self._status.setText(str(exc))
+        self._status_is_draw_error = True
+
+    def _show_message(self, message: str) -> None:
+        """Put a message a redraw keeps: an export's result, or why the run did not open."""
+        self._status.setText(message)
+        self._status_is_draw_error = False
 
     def _export(self) -> None:
         path, _filter = QFileDialog.getSaveFileName(
@@ -348,9 +360,9 @@ class LocationPlotsPanel(QWidget):
             lambda emit: plots.export(
                 view, target.with_suffix(""), chosen, formats=(fmt,), progress=emit
             ),
-            lambda paths: self._status.setText(f"Wrote {paths[0]}"),
+            lambda paths: self._show_message(f"Wrote {paths[0]}"),
             label="Exporting…",
-            on_error=self._failed,
+            on_error=lambda exc: self._show_message(str(exc)),
         )
 
 
