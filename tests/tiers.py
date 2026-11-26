@@ -236,6 +236,9 @@ GUARD_FILES = frozenset(
         # job: the cost model is invisible to every behavioural test.
         "tests/storage/test_dirscan.py",
         "tests/models/test_no_implicit_network.py",
+        # A detector distilled with a negative prompt never reports that class, on every
+        # path that builds one; a site that forgot the ids would put the cable back silently.
+        "tests/models/test_negative_classes.py",
         # A package probe in the app answers from startup; an editable install made while
         # it is open stays invisible until the .pth files are re-read (#506).
         "tests/core/test_installed.py",

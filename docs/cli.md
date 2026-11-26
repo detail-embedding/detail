@@ -705,10 +705,21 @@ for its background colour), then the run's own progress follows.
   `0.5`), `--min-contour-area` (px, default `100`), `--val-split` (default `0.15`),
   `--background-share` (default `0.1`, at most `0.5`: frames where the model found none of the
   classes are kept with an empty label, up to this share of the dataset, so the detector learns
-  what an empty frame looks like; `0` keeps none), plus `--backend` / `--device`. Each sampled
-  frame is decoded exactly; one that can't be is replaced by another frame from the same video.
-  The validation share is drawn over the frames that made it into the dataset. Writes
-  `dataset_NNN`.
+  what an empty frame looks like; `0` keeps none), `--negative-prompt TEXT` (none by default;
+  see below), plus `--backend` / `--device`. Each sampled frame is decoded exactly; one that
+  can't be is replaced by another frame from the same video. The validation share is drawn over
+  the frames that made it into the dataset. Writes `dataset_NNN`.
+
+  **A negative prompt.** `--negative-prompt TEXT` names something in the video that touches the
+  animal but is not it, such as a tether's cable. It is labelled as one more class, named after
+  the prompt, so a detector trained on the dataset learns it apart from your `--class` ones, and
+  that detector never reports it: its detection runs hold only your classes. `dataset status`,
+  `train status` and `model show` print it as `negative prompt`. The detector's mAP50 still
+  averages the negative class in with yours, and `train status` and `model show` say so under
+  the metrics. For a tether, `cable` works
+  with SAM 3 where `tether` finds nothing. Check it first with [`detection prompt-test`](#detection-prompt-test): it must
+  find the cable and no part of the animal, such as a tail. A negative prompt that is also one
+  of your classes, by name or prompt, is refused.
 - `keypoints --experiment <dir> --name <name> --n-frames N --teacher patch|detect`: the third
   dataset source, a YOLO-pose dataset taught by the patch method or by finished keypoint detect
   runs, the label stage of [`keypoints distill`](#keypoints) on its own. Same teacher and label
@@ -751,7 +762,7 @@ this experiment at once; `train promote` it for cross-experiment reuse.
 - `run --experiment <dir> --name <name> --class NAME:PROMPT [--class …] --n-frames N`: launch a
   distill run. Labeling options mirror `dataset label` (`--label-model` (default `sam3`),
   `--label-model-variant`, `--sampling`, `--logit-threshold`, `--min-contour-area`, `--val-split`,
-  `--background-share`, `--recording <id>` repeatable); training options mirror `train run` (`--base-model`, `--trainer`,
+  `--background-share`, `--negative-prompt`, `--recording <id>` repeatable); training options mirror `train run` (`--base-model`, `--trainer`,
   `--epochs` / `--batch-size` / `--imgsz` / `--patience`). Compute is **per stage**,
   `--label-backend` / `--label-device` (SAM3 needs CUDA) and `--train-backend` / `--train-device`.
   One bar shows the folded `labeling → training` progress with an ETA. Ctrl-C detaches (the run

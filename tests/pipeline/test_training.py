@@ -171,7 +171,7 @@ def _stub_trained_yolo(monkeypatch, detections=()):
     from detail.core.dataclasses import FrameResult
 
     class _StubModel:
-        def __init__(self, weights, classes):
+        def __init__(self, weights, classes, *, negative_class_ids):
             self.classes = classes
 
         def load(self, device):
@@ -201,7 +201,13 @@ def test_capture_preview_writes_overlay(tmp_path, monkeypatch):
     run_dir.mkdir()
     _stub_trained_yolo(monkeypatch)
     rel = training._capture_preview(
-        ddir, tmp_path / "best.pt", [{"id": 0, "name": "mouse"}], run_dir, "cpu", None
+        ddir,
+        tmp_path / "best.pt",
+        [{"id": 0, "name": "mouse"}],
+        run_dir,
+        "cpu",
+        None,
+        negative_class_ids=[],
     )
     assert rel == "preview.png"
     assert (run_dir / "preview.png").is_file()
@@ -214,7 +220,9 @@ def test_capture_preview_no_val_frames_returns_none(tmp_path, monkeypatch):
     run_dir.mkdir()
     _stub_trained_yolo(monkeypatch)
     assert (
-        training._capture_preview(ddir, tmp_path / "b.pt", [], run_dir, "cpu", None)
+        training._capture_preview(
+            ddir, tmp_path / "b.pt", [], run_dir, "cpu", None, negative_class_ids=[]
+        )
         is None
     )
 
@@ -227,7 +235,7 @@ def test_capture_preview_swallows_inference_error(tmp_path, monkeypatch):
     run_dir.mkdir()
 
     class _Boom:
-        def __init__(self, weights, classes):
+        def __init__(self, weights, classes, *, negative_class_ids):
             pass
 
         def load(self, device):
@@ -238,10 +246,82 @@ def test_capture_preview_swallows_inference_error(tmp_path, monkeypatch):
 
     monkeypatch.setattr("detail.pipeline.training.TrainedYOLO", _Boom)
     assert (
-        training._capture_preview(ddir, tmp_path / "b.pt", [], run_dir, "cpu", None)
+        training._capture_preview(
+            ddir, tmp_path / "b.pt", [], run_dir, "cpu", None, negative_class_ids=[]
+        )
         is None
     )
     assert not (run_dir / "preview.png").exists()
+
+
+_CABLE_LINE = "1 0.1 0.1 0.2 0.1 0.2 0.2\n"
+_MOUSE_LINE = "0 0.5 0.5 0.6 0.5 0.6 0.6\n"
+
+
+@pytest.mark.parametrize(
+    "text, negative_ids, expected",
+    [
+        (None, [1], False),  # no label file
+        ("", [1], False),  # a background frame
+        (_CABLE_LINE, [1], False),  # only the negative class, which the loader drops
+        (_CABLE_LINE + _MOUSE_LINE, [1], True),
+        (_CABLE_LINE, [], True),  # no negative class: any label is reported
+    ],
+)
+def test_a_preview_frame_needs_a_label_the_model_reports(
+    tmp_path, text, negative_ids, expected
+):
+    path = tmp_path / "frame.txt"
+    if text is not None:
+        path.write_text(text, encoding="utf-8")
+    assert training._has_output_label(path, negative_ids) is expected
+
+
+@pytest.mark.parametrize("negative_ids, previewed", [([1], 200), ([], 10)])
+def test_the_preview_skips_a_frame_labelled_only_with_the_negative_class(
+    tmp_path, monkeypatch, negative_ids, previewed
+):
+    import cv2
+    import numpy as np
+
+    from detail.core.dataclasses import FrameResult
+
+    ddir = tmp_path / "ds"
+    images = ddir / "images" / "val"
+    labels = ddir / "labels" / "val"
+    images.mkdir(parents=True)
+    labels.mkdir(parents=True)
+    # "a" sorts first and holds only the cable; "b" holds the mouse. Each is one flat grey,
+    # so the frame the model was shown is read back from its mean.
+    for stem, grey, line in (("a", 10, _CABLE_LINE), ("b", 200, _MOUSE_LINE)):
+        cv2.imwrite(str(images / f"{stem}.png"), np.full((16, 24, 3), grey, np.uint8))
+        (labels / f"{stem}.txt").write_text(line, encoding="utf-8")
+    seen = []
+
+    class _Model:
+        def __init__(self, weights, classes, *, negative_class_ids):
+            pass
+
+        def load(self, device):
+            pass
+
+        def predict(self, frame_bgr, prompt):
+            seen.append(int(frame_bgr.mean()))
+            return FrameResult.from_detections(frame_idx=0, t_ns=0, detections=[])
+
+    monkeypatch.setattr("detail.pipeline.training.TrainedYOLO", _Model)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    training._capture_preview(
+        ddir,
+        tmp_path / "best.pt",
+        [{"id": 0, "name": "mouse"}],
+        run_dir,
+        "cpu",
+        None,
+        negative_class_ids=negative_ids,
+    )
+    assert seen == [previewed]
 
 
 def test_training_runner_captures_preview(tmp_path, monkeypatch):
@@ -750,3 +830,45 @@ def test_the_api_reads_the_history_through_the_record_s_trainer(tmp_path):
     history = exp.model_metric_history("model_001")
 
     assert [row["epoch"] for row in history] == [1, 2], history
+
+
+@pytest.mark.parametrize("negatives", [[{"id": 1, "name": "cable"}], None])
+def test_the_model_carries_the_datasets_negative_classes(
+    tmp_path, monkeypatch, negatives
+):
+    """§12 *Negative prompt*: the loader reads ``model.yaml``, so the dataset's negative
+    classes have to reach it, and the preview has to be built without them (a dataset from
+    before the field: none)."""
+    from detail.core.dataclasses import FrameResult
+
+    proj = _dataset(experiment_store.create_experiment(tmp_path, "p"))
+    ddir = datasets_store.dataset_dir(proj, "dataset_001")
+    _write_val_frame(ddir)
+    if negatives is not None:
+        record = datasets_store.read_dataset_yaml(ddir)
+        record["negative_classes"] = negatives
+        datasets_store.write_dataset_yaml(ddir, record)
+    built = []
+
+    class _Recording:
+        def __init__(self, weights, classes, *, negative_class_ids):
+            built.append((classes, list(negative_class_ids)))
+
+        def load(self, device):
+            pass
+
+        def predict(self, frame_bgr, prompt):
+            return FrameResult.from_detections(frame_idx=0, t_ns=0, detections=[])
+
+    monkeypatch.setattr("detail.pipeline.training.TrainedYOLO", _Recording)
+    mdir = models_store.model_dir(proj, "model_001")
+    mdir.mkdir(parents=True)
+    models_store.write_model_yaml(
+        mdir, {"id": "model_001", "trainer_id": "stub_trainer", "status": "running"}
+    )
+    with _registered_stub():
+        training.run(_job(), mdir, progress_cb=lambda e: None, stop_event=None)
+    model = models_store.read_model_yaml(mdir)
+    assert model["classes"] == [{"id": 0, "name": "mouse"}]
+    assert model["negative_classes"] == (negatives or [])
+    assert built == [(["mouse"], [1] if negatives else [])]

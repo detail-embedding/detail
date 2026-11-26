@@ -16,6 +16,7 @@ def test_valid_config_round_trips():
         "min_contour_area": 50,
         "val_split": 0.2,
         "background_share": 0.25,
+        "negative_prompt": "cable",
     }
     assert LabelingConfig.model_validate(d).model_dump() == d
 
@@ -29,6 +30,7 @@ def test_defaults():
     assert cfg.min_contour_area == 100
     assert cfg.val_split == 0.15
     assert cfg.background_share == 0.1
+    assert cfg.negative_prompt is None
 
 
 @pytest.mark.parametrize("share", [-0.1, 0.51])
@@ -75,3 +77,14 @@ def test_field_metadata_is_the_single_source():
         fields["logit_threshold"].json_schema_extra["label"] == "Confidence threshold"
     )
     assert "SAM3" not in fields["logit_threshold"].description
+
+
+@pytest.mark.parametrize("blank", ["", "   ", None])
+def test_a_blank_negative_prompt_is_none(blank):
+    cfg = LabelingConfig.model_validate({"n_frames": 10, "negative_prompt": blank})
+    assert cfg.negative_prompt is None
+
+
+def test_a_negative_prompt_is_trimmed():
+    cfg = LabelingConfig.model_validate({"n_frames": 10, "negative_prompt": " cable "})
+    assert cfg.negative_prompt == "cable"

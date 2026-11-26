@@ -2925,6 +2925,9 @@ class LabelingJob:
     model_variant: str | None = None
     background_share: float = 0.0    # cap on empty-label frames; the API passes
                                      # LabelingConfig's resolved value (default 0.1)
+    negative_classes: list[str] = field(default_factory=list)
+                                     # names, among `classes`, of the negative prompt's class
+                                     # (*Negative prompt* below); [] for a job from before it
 
 @dataclass
 class TrainingJob:
@@ -3005,6 +3008,7 @@ source:
   classes:
     - {class_id: 0, name: "mouse", prompt: "mouse"}
     - {class_id: 1, name: "food_pellet", prompt: "food pellet"}
+  negative_classes: []        # the negative prompt's class, as asked: [{class_id, name, prompt}]
   n_frames: 10000
   logit_threshold: 0.5
   min_contour_area: 100
@@ -3016,6 +3020,9 @@ classes:
   - id: 1
     name: "food_pellet"
 
+negative_classes: []        # labeling source: labelled but kept out of `classes`, so a model
+                            # trained on it never outputs them (*Negative prompt*); data.yaml
+                            # names them, `per_class` counts them; absent on older datasets
 val_split: 0.15
 background_share: 0.1       # labeling source: the cap on empty-label frames
 n_train: 8494               # split drawn over the examples written, so
@@ -3080,6 +3087,10 @@ classes:
     name: "mouse"
   - id: 1
     name: "food_pellet"
+
+negative_classes: []          # copied from the dataset: class ids the weights know and the
+                              # loader drops from every prediction (*Negative prompt*); absent
+                              # on older models and on imports, which reads as []
 
 weights:
   best: "run/weights/best.pt"
@@ -3245,7 +3256,7 @@ config:                          # serialized DistillConfig + the experiment-awa
   source_recording_ids: ["rec_001", "rec_002"]
   labeling: {model_id: "sam3", model_variant: null, n_frames: 500, sampling: "stratified",
              logit_threshold: 0.5, min_contour_area: 100, val_split: 0.15,
-             background_share: 0.1}
+             background_share: 0.1, negative_prompt: null}
   training: {epochs: 100, batch_size: 32, imgsz: 640, patience: 100}
   label_compute: {backend: "cuda", device_indices: null, cloud_provider: null, cloud_instance: null}
   train_compute: {backend: "cuda", device_indices: null, cloud_provider: null, cloud_instance: null}
@@ -3294,6 +3305,54 @@ label stage re-labels from scratch. `delete_distill(run_id)` prunes only the `di
 never the produced dataset, trained model, or a promoted global model.
 
 **Surfaces (parity):** `Experiment.distill(...)` (API) · `detail distill run|list|status|attach|resume|cancel|delete` (CLI) · one bespoke `DistillDialog` (GUI, with a `Test prompts…` preview) — distill is §12, so a bespoke surface does not conflict with "one launch surface per module" (that governs §6.5/§16 modules).
+
+### Negative prompt (a class the student learns apart and never outputs)
+
+> Built 2026-11-24 from #94's labelling half (issue #92). Deliberately **not** a
+> multi-class or class-role mechanism: nothing downstream of the model knows the class exists.
+
+**The failure it fixes.** A tethered animal's cable leaves its head with a box that always
+overlaps the body's. A student distilled with the animal class alone learns the cable as a faint
+piece of the animal (on a tethered-mouse pilot it found it as its own `mouse` detection at
+0.05–0.4), and `anchor_tracker`, which gates fragments on box overlap alone, merges it into the
+subject: the cable sat inside the tracked mask on 20–27% of frames. The teacher was not the
+cause: SAM 3's animal masks stopped at the head. Re-distilling with the cable as a second class
+and tracking only the animal took that to 3.7%, 0.1% and 0.7% on the three mice.
+
+**The option.** `LabelingConfig.negative_prompt` (`str | None`, default `None`, advanced; blank
+is `None`) names the thing. `configs/labeling.with_negative_prompt` adds one `LabelingClass`
+after the user's (next class id, named and prompted as typed), so the user's classes keep their
+ids. A prompt equal to a class's name or prompt (case-insensitive) is refused. It is the labeling
+config's, so it reaches both places labeling is launched from: `label_dataset(negative_prompt=)`
+/ `dataset label --negative-prompt` / Auto-label, and `distill(negative_prompt=)` / `distill run
+--negative-prompt` / Distill new model, whose label stage replays `config.labeling.negative_prompt`
+(a record from before the field: none). **Test prompts** tests it beside the user's prompts: the
+check that it finds the cable and no part of the animal (a tail looks like a cable). The help text
+suggests `cable`: on the pilot SAM 3 found nothing for `tether` (0 of 10 frames) and the cable on
+9 of 10 for `cable`.
+
+**Where it is recorded, and what reads it.** The job records the class by name
+(`LabelingJob.negative_classes`). `dataset.yaml` keeps it out of `classes` and lists it under
+`negative_classes`; the trainer's `data.yaml` names it, so the student is trained on it.
+Training copies `negative_classes` to `model.yaml`, promote and the model archive carry it, and
+`models/resolve.py` passes its ids to the trained loader as the required keyword
+`negative_class_ids` (`TRAINED_LOADERS` contract); `TrainedYOLO` drops those rows on both
+predict paths. Ultralytics' NMS is per class, so the other classes' rows are exactly what they
+would be with the class left in. So `model.yaml`'s `classes` stays what the model outputs, and
+**no run record mentions the negative class**: detection and tracking identity are unchanged, and
+tracking, keypoints, exports and tuning need nothing. Guard:
+`tests/models/test_negative_classes.py` (every construction path).
+
+**Where it stops.** The bare `best.pt` of such a model, imported with `model import`, reports the
+negative class: the checkpoint's own names include it and only `model.yaml` says to drop it (the
+model archive keeps it). The model's **metrics include the negative class**: Ultralytics'
+`results.csv` holds the mean mAP50 over every class trained and no per-class score, and it picks
+`best.pt` by that all-class fitness. The number is labelled rather than recomputed: the model
+pages, `train status` and `model show` print `api_models.negative_metrics_note` beside it. A
+score over the output classes alone needs per-class metrics kept from training, which belongs to
+the multi-class design, not here. A later design that wants the student's negative detections (a class
+role, say) adds a detection option whose default is today's drop, so existing runs stay
+equivalent (§3 *Compatibility contract*).
 
 ### Distill keypoints (label with the patch method or a keypoint detect run → train YOLO-pose → register)
 

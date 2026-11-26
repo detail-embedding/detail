@@ -31,6 +31,7 @@ from detail.api.experiment import Experiment
 from detail.api.models import prompt_capable_models
 from detail.configs.distill import DEFAULT_N_FRAMES
 from detail.configs.labeling import LabelingConfig
+from detail.configs.labeling import with_negative_prompt
 from detail.core.dataclasses import LabelingClass
 from detail.gui.compute_target import ComputeTargetRow
 from detail.gui.dialog import Dialog
@@ -59,6 +60,37 @@ from detail.storage import read_cache
 _TRAINING_KNOBS = "Training parameters"
 
 _BASE_MODELS = ["yolo11s-seg.pt", "yolo11n-seg.pt", "yolo11m-seg.pt", "yolo11l-seg.pt"]
+
+
+def _negative_prompt_field(form: ConfigForm) -> QLineEdit:
+    """The *Negative prompt* row (§12) of a labelling form. ``build_fields`` builds no text
+    field, so it is built here once for both labelling dialogs; its label and help are
+    ``LabelingConfig``'s, and the row lands under Advanced because the field is advanced.
+    """
+    meta = field_meta(LabelingConfig, "negative_prompt")
+    edit = QLineEdit()
+    edit.setPlaceholderText("none (for a tether: cable)")
+    edit.setToolTip(meta["help"])
+    form.addRow(field_label("labeling", "negative_prompt", meta["label"] + ":"), edit)
+    return edit
+
+
+def _prompt_test_classes(
+    parent: QWidget, classes: list[LabelingClass], negative_prompt: str
+) -> list[LabelingClass] | None:
+    """The classes *Test prompts* tries: the user's plus the negative prompt's, so the test
+    shows whether it finds only the thing that is not the subject. ``None`` (after saying
+    why) when there is nothing to test or the negative prompt is one of the classes."""
+    if not classes:
+        QMessageBox.information(
+            parent, "Test prompts", "Add at least one class with a text prompt."
+        )
+        return None
+    try:
+        return with_negative_prompt(classes, negative_prompt)[0]
+    except ValueError as exc:
+        QMessageBox.information(parent, "Test prompts", str(exc))
+        return None
 
 
 def _colored(label: QLabel, ok: bool) -> None:
@@ -244,6 +276,7 @@ class GenerateLabelingDialog(Dialog):
         form.addRow(
             field_label("labeling", "min_contour_area", ma_label + ":"), self._min_area
         )
+        self._negative = _negative_prompt_field(form)
         self._compute = ComputeTargetRow()
         self._compute.add_to(form.section())
         form.finish()
@@ -322,11 +355,8 @@ class GenerateLabelingDialog(Dialog):
         per-class prompts detect on sampled frames (with the selected model) before a
         full labeling run. Returns the dialog (or ``None`` when there's nothing to test)
         so it can be exercised without the blocking modal ``exec``."""
-        classes = self._classes()
-        if not classes:
-            QMessageBox.information(
-                self, "Test prompts", "Add at least one class with a text prompt."
-            )
+        classes = _prompt_test_classes(self, self._classes(), self._negative.text())
+        if classes is None:
             return None
         selected = selected_recording_ids(self._recordings)
         recordings = [self._experiment.get_recording(sid) for sid in selected] or list(
@@ -366,6 +396,7 @@ class GenerateLabelingDialog(Dialog):
                 min_contour_area=self._min_area.value(),
                 val_split=self._val_split.value(),
                 background_share=self._background.value(),
+                negative_prompt=self._negative.text().strip() or None,
                 compute=self._compute.compute_target(),
                 sampling=self._sampling.currentText(),
                 model_id=self._model.currentText(),
@@ -632,6 +663,7 @@ class DistillDialog(Dialog):
             field_label("labeling", "min_contour_area", "Min contour area (px):"),
             self._min_area,
         )
+        self._negative = _negative_prompt_field(form)
         self._compute = ComputeTargetRow()  # labeling (also drives Test prompts)
         self._compute.add_to(form.section(), prefix="Label")
 
@@ -805,11 +837,8 @@ class DistillDialog(Dialog):
         return classes
 
     def _open_prompt_test(self) -> None:
-        classes = self._classes()
-        if not classes:
-            QMessageBox.information(
-                self, "Test prompts", "Add at least one class with a text prompt."
-            )
+        classes = _prompt_test_classes(self, self._classes(), self._negative.text())
+        if classes is None:
             return
         selected = selected_recording_ids(self._recordings)
         recordings = [self._experiment.get_recording(sid) for sid in selected] or list(
@@ -870,6 +899,7 @@ class DistillDialog(Dialog):
                 min_contour_area=self._min_area.value(),
                 val_split=self._val_split.value(),
                 background_share=self._background.value(),
+                negative_prompt=self._negative.text().strip() or None,
                 label_model_id=self._model.currentText(),
                 label_model_variant=self._variant.currentData(),
                 label_compute=self._compute.compute_target(),

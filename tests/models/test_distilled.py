@@ -273,3 +273,30 @@ def test_a_detection_promote_adds_no_pose_fields(tmp_path):
     rec = imported_store.read(gid)
     assert not imported_store.is_pose_record(rec)
     assert "skeleton" not in rec and "role" not in rec
+
+
+def test_promote_and_a_model_archive_keep_the_negative_classes(tmp_path):
+    """§12 *Negative prompt*: the catalog copy still has weights that know the cable, so it
+    must keep the record that says never to report it — and so must a copy of it exported to
+    another machine and imported back."""
+    from detail.models import resolve
+
+    proj = experiment_store.create_experiment(tmp_path, "tethered")
+    mdir = _trained_model(proj)
+    record = models_store.read_model_yaml(mdir)
+    record["negative_classes"] = [{"id": 1, "name": "cable"}]
+    models_store.write_model_yaml(mdir, record)
+    gid = distilled.register_distilled_model(
+        proj, "model_001", source_experiment_name="tethered", source_experiment_id="t"
+    )
+    assert imported_store.read(gid)["negative_classes"] == [{"id": 1, "name": "cable"}]
+    assert api_models.imported_model(gid).negative_classes == ["cable"]
+
+    archive = tmp_path / "tethered.zip"
+    api_models.export_model(gid, archive)
+    api_models.remove_imported_model(gid)
+    assert api_models.import_model_archive(archive) == gid
+    assert api_models.imported_model(gid).negative_classes == ["cable"]
+    model = resolve.resolve_pretrained_or_imported(gid)
+    assert model.classes == ["mouse"]
+    assert model._negative_class_ids == {1}

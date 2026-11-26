@@ -30,6 +30,7 @@ import pytest
 import yaml
 
 from detail.api.experiment import Experiment
+from detail.configs.labeling import with_negative_prompt
 from detail.core.dataclasses import (
     ComputeTarget,
     Detection,
@@ -584,3 +585,55 @@ def test_sample_size_is_exact(tmp_path, monkeypatch):
     assert len(imgs) == 25  # exactly what was requested
     rec = yaml.safe_load((run_dir / "dataset.yaml").read_text(encoding="utf-8-sig"))
     assert rec["n_train"] == 25 and rec["status"] == "complete"
+
+
+def test_a_negative_prompt_is_labelled_and_kept_out_of_the_classes(
+    tmp_path, monkeypatch
+):
+    """§12 *Negative prompt*: the trainer's ``data.yaml`` names both classes so the student
+    learns the cable apart, and ``dataset.yaml`` lists it under ``negative_classes`` only, so
+    a model trained on it outputs the user's classes."""
+    monkeypatch.setitem(MODELS, "sam3", _FakeSAM3)
+    classes, negatives = with_negative_prompt(
+        [LabelingClass(class_id=0, name="mouse", prompt="a mouse")], "cable"
+    )
+    run_dir = _run(
+        _setup(tmp_path),
+        _job(classes=classes, negative_classes=negatives, n_frames=8, val_split=0.0),
+    )
+    label_ids = {
+        line.split()[0]
+        for path in _label_files(run_dir)
+        for line in path.read_text(encoding="utf-8-sig").splitlines()
+    }
+    assert label_ids == {"0", "1"}  # the cable is labelled as its own class
+    data = yaml.safe_load((run_dir / "data.yaml").read_text(encoding="utf-8-sig"))
+    assert data["names"] == {0: "mouse", 1: "cable"}
+    record = _dataset_record(run_dir)
+    assert record["classes"] == [{"id": 0, "name": "mouse"}]
+    assert record["negative_classes"] == [{"id": 1, "name": "cable"}]
+    assert [c["name"] for c in record["source"]["classes"]] == ["mouse"]
+    assert record["source"]["negative_classes"] == [
+        {"class_id": 1, "name": "cable", "prompt": "cable"}
+    ]
+    assert set(record["per_class"]) == {"0", "1"}
+
+
+def test_a_dataset_without_a_negative_prompt_records_none(tmp_path, monkeypatch):
+    monkeypatch.setitem(MODELS, "sam3", _FakeSAM3)
+    record = _dataset_record(_run(_setup(tmp_path), _job(n_frames=4, val_split=0.0)))
+    assert record["negative_classes"] == []
+    assert record["source"]["negative_classes"] == []
+
+
+def test_label_dataset_refuses_a_negative_prompt_that_is_a_class(tmp_path):
+    proj = _api_experiment(tmp_path)
+    with pytest.raises(
+        ValueError, match="negative prompt 'A Mouse' is also class 'mouse'"
+    ):
+        proj.label_dataset(
+            "d",
+            [LabelingClass(0, "mouse", "a mouse")],
+            n_frames=4,
+            negative_prompt="A Mouse",
+        )

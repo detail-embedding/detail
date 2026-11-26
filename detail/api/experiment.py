@@ -29,6 +29,7 @@ from detail.api.models import ImportedModelRef  # re-exported; machine-global (�
 from detail.api.recording import Recording
 from detail.configs.distill import DistillConfig
 from detail.configs.labeling import LabelingConfig
+from detail.configs.labeling import with_negative_prompt
 from detail.core import progress as progress_mod
 from detail.core.dataclasses import (
     ACTIVE_STATUSES,
@@ -1164,6 +1165,8 @@ class DistillOrchestrator:
                 val_split=lab["val_split"],
                 # A distill recorded before the field existed labelled with no background.
                 background_share=lab.get("background_share", 0.0),
+                # A distill recorded before the field existed had no negative prompt.
+                negative_prompt=lab.get("negative_prompt"),
                 compute=ComputeTarget.from_dict(cfg["label_compute"]),
                 sampling=lab["sampling"],
                 model_id=lab["model_id"],
@@ -3119,6 +3122,7 @@ class Experiment:
         background_share: float = LabelingConfig.model_fields[
             "background_share"
         ].default,
+        negative_prompt: str | None = None,
         label_model_id: str = "sam3",
         label_model_variant: str | None = None,
         label_compute: ComputeTarget | None = None,
@@ -3129,6 +3133,9 @@ class Experiment:
     ) -> "AttachedDistillRun":
         """Distill a fast detector in one durable run (§12): label a frame sample with a
         prompt-capable model, then train a closed-set YOLO on those labels.
+        ``negative_prompt`` names something in the video that is not the subject (a tether's
+        cable): it is labelled as a class of its own so the student learns it apart, and the
+        trained model never reports it (§12 *Negative prompt*).
 
         Validates the union of the labeling and training pre-flight up front (Tenet 10),
         reserves the run record, then spawns a **detached distill coordinator** that
@@ -3141,12 +3148,15 @@ class Experiment:
             ValueError: no/duplicate classes, a non-prompt-capable label model, a recording
                 without video, ``n_frames`` above the frames available, the label model not
                 ready, an unknown/unready trainer, an unsupported train backend, or invalid
-                hyperparameters.
+                hyperparameters; or a ``negative_prompt`` that is also one of the classes.
         """
         import_runner_modules(_PIPELINE_RUNNERS)
         recording_ids = self._sampling_recordings(source_recording_ids)
         if not classes:
             raise ValueError("labeling needs at least one class (a name + text prompt)")
+        # The label stage adds the negative class itself (label_dataset); the clash is refused
+        # here too, so a bad combination fails before the run exists (Tenet 10).
+        with_negative_prompt(classes, negative_prompt)
         prompts = [c.prompt for c in classes]
         if len(set(prompts)) != len(prompts):
             raise ValueError(
@@ -3168,6 +3178,7 @@ class Experiment:
                 "min_contour_area": min_contour_area,
                 "val_split": val_split,
                 "background_share": background_share,
+                "negative_prompt": negative_prompt,
             }
         )
         trainer_cls = TRAINERS.get(trainer_id)
@@ -3617,6 +3628,7 @@ class Experiment:
         background_share: float = LabelingConfig.model_fields[
             "background_share"
         ].default,
+        negative_prompt: str | None = None,
     ) -> DatasetRun:
         """Build a YOLO dataset by running a prompt-capable model on a sample of frames (§12) —
         the distill-into-YOLO source, no existing detection run needed. ``model_id`` picks which
@@ -3625,10 +3637,14 @@ class Experiment:
         length; ``sampling`` picks how frames are drawn within each video (``"stratified"`` spreads
         them evenly across time, ``"uniform"`` is fully random). ``source_recording_ids=None`` uses
         every recording. Frames where the model found none of the classes are kept with an
-        empty label, up to ``background_share`` of the dataset. Returns a run handle.
+        empty label, up to ``background_share`` of the dataset. ``negative_prompt`` adds a class
+        for something that is not the subject (a tether's cable), labelled so a detector trained
+        on the dataset learns it apart and never reports it (§12 *Negative prompt*). Returns a
+        run handle.
 
         The flat scalar parameters (``model_id``, ``model_variant``, ``n_frames``, ``sampling``,
-        ``logit_threshold``, ``min_contour_area``, ``val_split``, ``background_share``) are
+        ``logit_threshold``, ``min_contour_area``, ``val_split``, ``background_share``,
+        ``negative_prompt``) are
         validated by
         :class:`LabelingConfig`; the checks below need recording data and stay here.
 
@@ -3636,7 +3652,8 @@ class Experiment:
             ValueError: no classes, duplicate class prompts, a scalar out of its model bounds
                 (bad ``sampling`` / ``val_split`` / ``n_frames`` / thresholds), a model that is not
                 prompt-capable, a recording without video, ``n_frames`` above the frames available,
-                or the chosen model not ready.
+                the chosen model not ready, or a ``negative_prompt`` that is also one of the
+                classes.
         """
         import_runner_modules(_PIPELINE_RUNNERS)
         recording_ids = self._sampling_recordings(source_recording_ids)
@@ -3664,8 +3681,11 @@ class Experiment:
                 "min_contour_area": min_contour_area,
                 "val_split": val_split,
                 "background_share": background_share,
+                "negative_prompt": negative_prompt,
             }
         )
+        # The negative prompt is labelled as one more class, recorded by name (Tenet 9).
+        labelled, negative_classes = with_negative_prompt(classes, cfg.negative_prompt)
         if not recording_ids:
             raise ValueError("labeling needs at least one source recording with video")
         available = 0
@@ -3699,7 +3719,7 @@ class Experiment:
             dataset_id=dataset_id,
             name=name,
             source_recording_ids=recording_ids,
-            classes=classes,
+            classes=labelled,
             n_frames=cfg.n_frames,
             logit_threshold=cfg.logit_threshold,
             min_contour_area=cfg.min_contour_area,
@@ -3710,6 +3730,7 @@ class Experiment:
             sampling=cfg.sampling,
             model_id=cfg.model_id,
             model_variant=cfg.model_variant,
+            negative_classes=negative_classes,
         )
         ddir = datasets_store.dataset_dir(self._dir, dataset_id)
         ddir.mkdir(parents=True, exist_ok=True)

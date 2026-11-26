@@ -131,7 +131,18 @@ def _load_from_model_yaml(model_dir: Path | str) -> DetectionModel:
     if best is None:
         raise ValueError(f"model {model_dir.name!r} has no best-weights path")
     classes = [c["name"] for c in record.get("classes", [])]
-    return loader(weights_path=model_dir / best, classes=classes)
+    return loader(
+        weights_path=model_dir / best,
+        classes=classes,
+        negative_class_ids=negative_class_ids(record),
+    )
+
+
+def negative_class_ids(record: dict) -> list[int]:
+    """The class ids a ``model.yaml`` record's weights know and its model never reports: the
+    classes of the negative prompt it was distilled with (§12 *Negative prompt*). ``[]`` for a
+    model distilled without one, a record from before the field, or an import."""
+    return [int(c["id"]) for c in record.get("negative_classes") or []]
 
 
 #: Where a keypoint student's weights live, by the ``weights_source`` a run records (§12

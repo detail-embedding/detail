@@ -855,7 +855,7 @@ class _FakeClosedSet(_FakeDetector):
 
     supported_cue_types = []
 
-    def __init__(self, weights_path=None, classes=None):
+    def __init__(self, weights_path=None, classes=None, *, negative_class_ids=()):
         self._classes = list(classes or [])
 
     @property

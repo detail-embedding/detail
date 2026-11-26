@@ -108,7 +108,11 @@ def register_trained_loader(
 ) -> Callable[[type[DetectionModel]], type[DetectionModel]]:
     """Register a DetectionModel that loads locally-trained weights, keyed by
     ``model_family`` (§12). Detection resolves a ``weights_source="trained"``
-    model id to this loader via the family recorded in its ``model.yaml``."""
+    model id to this loader via the family recorded in its ``model.yaml``.
+
+    The resolver constructs it as ``cls(weights_path=, classes=, negative_class_ids=)``:
+    the classes it outputs, and the class ids its weights know that it must never output
+    (§12 *Negative prompt*)."""
 
     def decorator(cls: type[DetectionModel]) -> type[DetectionModel]:
         TRAINED_LOADERS[model_family] = cls

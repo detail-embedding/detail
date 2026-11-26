@@ -344,6 +344,11 @@ and usable by later detection runs (`--model model_001`), or a keypoint student 
 keypoint detect runs. Build with `train run`, `distill` or `keypoints distill`; `train promote`
 copies one into the machine-global catalog, a keypoint student with its skeleton.
 
+A detector can be trained with a **negative prompt**: something touching the animal that is not
+it, such as a tether's cable, labelled as a class of its own so the detector learns it apart. The
+model never reports that class, so its detection runs hold only the classes you asked for. Its
+mAP50 is still the average over every class it learned, the negative one included.
+
 ### Imported model
 
 External weights (a YOLO `.pt`) registered into a **machine-global** catalog, usable in every

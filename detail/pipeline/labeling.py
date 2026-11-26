@@ -309,7 +309,13 @@ def _load_model(experiment_root, job: LabelingJob):
 def _finalize(
     run_dir, job, per_class, n_train, n_val, n_background, stats, interrupted
 ) -> None:
+    # The trainer's data.yaml names every labelled class; dataset.yaml keeps the negative
+    # prompt's class out of `classes`, which is what a model trained on it outputs (§12
+    # *Negative prompt*).
     datasets_store.write_data_yaml(run_dir, {c.class_id: c.name for c in job.classes})
+    negative = set(job.negative_classes)
+    classes = [c for c in job.classes if c.name not in negative]
+    negatives = [c for c in job.classes if c.name in negative]
     datasets_store.write_dataset_yaml(
         run_dir,
         {
@@ -321,13 +327,15 @@ def _finalize(
                 "model": job.model_id,
                 "model_variant": job.model_variant,
                 "recording_ids": list(job.source_recording_ids),
-                "classes": [c.to_dict() for c in job.classes],
+                "classes": [c.to_dict() for c in classes],
+                "negative_classes": [c.to_dict() for c in negatives],
                 "n_frames": job.n_frames,
                 "logit_threshold": job.logit_threshold,
                 "min_contour_area": job.min_contour_area,
                 "sampling": job.sampling,
             },
-            "classes": [{"id": c.class_id, "name": c.name} for c in job.classes],
+            "classes": [{"id": c.class_id, "name": c.name} for c in classes],
+            "negative_classes": [{"id": c.class_id, "name": c.name} for c in negatives],
             "val_split": job.val_split,
             "background_share": job.background_share,
             "n_train": n_train,

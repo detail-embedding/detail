@@ -59,6 +59,9 @@ class ImportedModelRef:
     task: str | None = None
     skeleton: Skeleton | None = None
     skeleton_ref: dict | None = None
+    # A distilled detector's negative prompt classes (§12 *Negative prompt*): trained on,
+    # never output, so not among ``classes``.
+    negative_classes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -383,6 +386,7 @@ def _imported_ref(rec: dict) -> ImportedModelRef:
         name=rec.get("name", ""),
         model_family=rec.get("model_family", ""),
         classes=[c["name"] for c in rec.get("classes", [])],
+        negative_classes=[c["name"] for c in rec.get("negative_classes") or []],
         source=rec.get("source", "imported"),
         provenance=rec.get("provenance"),
         created_at=rec.get("created_at"),
@@ -414,6 +418,23 @@ def training_summary(record: dict) -> str | None:
         parts.append(f"{trained_with['backend']} {version}")
     parts.extend(f"{key} {value}" for key, value in hyperparams.items())
     return " · ".join(parts) or None
+
+
+def negative_metrics_note(negative_names: list[str]) -> str | None:
+    """What a detector's mAP50 averages over when it was trained with a negative prompt
+    (§12 *Negative prompt*): every class it learned, the negative one included, although the
+    model never reports that one. Ultralytics records the mean over all classes and keeps no
+    per-class score, so the number cannot be recomputed without it, and is labelled instead.
+
+    The one note the GUI model pages, ``train status`` and ``model show`` print beside the
+    metrics. None for a model with no negative class.
+    """
+    if not negative_names:
+        return None
+    return (
+        f"mAP50 averages in {', '.join(negative_names)}, which this model learned but "
+        "never reports"
+    )
 
 
 def _source_experiments(provenance: dict | None) -> list[dict]:
