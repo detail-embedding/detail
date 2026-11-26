@@ -254,6 +254,76 @@ def test_capture_preview_swallows_inference_error(tmp_path, monkeypatch):
     assert not (run_dir / "preview.png").exists()
 
 
+_CABLE_LINE = "1 0.1 0.1 0.2 0.1 0.2 0.2\n"
+_MOUSE_LINE = "0 0.5 0.5 0.6 0.5 0.6 0.6\n"
+
+
+@pytest.mark.parametrize(
+    "text, negative_ids, expected",
+    [
+        (None, [1], False),  # no label file
+        ("", [1], False),  # a background frame
+        (_CABLE_LINE, [1], False),  # only the negative class, which the loader drops
+        (_CABLE_LINE + _MOUSE_LINE, [1], True),
+        (_CABLE_LINE, [], True),  # no negative class: any label is reported
+    ],
+)
+def test_a_preview_frame_needs_a_label_the_model_reports(
+    tmp_path, text, negative_ids, expected
+):
+    path = tmp_path / "frame.txt"
+    if text is not None:
+        path.write_text(text, encoding="utf-8")
+    assert training._has_output_label(path, negative_ids) is expected
+
+
+@pytest.mark.parametrize("negative_ids, previewed", [([1], 200), ([], 10)])
+def test_the_preview_skips_a_frame_labelled_only_with_the_negative_class(
+    tmp_path, monkeypatch, negative_ids, previewed
+):
+    import cv2
+    import numpy as np
+
+    from detail.core.dataclasses import FrameResult
+
+    ddir = tmp_path / "ds"
+    images = ddir / "images" / "val"
+    labels = ddir / "labels" / "val"
+    images.mkdir(parents=True)
+    labels.mkdir(parents=True)
+    # "a" sorts first and holds only the cable; "b" holds the mouse. Each is one flat grey,
+    # so the frame the model was shown is read back from its mean.
+    for stem, grey, line in (("a", 10, _CABLE_LINE), ("b", 200, _MOUSE_LINE)):
+        cv2.imwrite(str(images / f"{stem}.png"), np.full((16, 24, 3), grey, np.uint8))
+        (labels / f"{stem}.txt").write_text(line, encoding="utf-8")
+    seen = []
+
+    class _Model:
+        def __init__(self, weights, classes, *, negative_class_ids):
+            pass
+
+        def load(self, device):
+            pass
+
+        def predict(self, frame_bgr, prompt):
+            seen.append(int(frame_bgr.mean()))
+            return FrameResult.from_detections(frame_idx=0, t_ns=0, detections=[])
+
+    monkeypatch.setattr("detail.pipeline.training.TrainedYOLO", _Model)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    training._capture_preview(
+        ddir,
+        tmp_path / "best.pt",
+        [{"id": 0, "name": "mouse"}],
+        run_dir,
+        "cpu",
+        None,
+        negative_class_ids=negative_ids,
+    )
+    assert seen == [previewed]
+
+
 def test_training_runner_captures_preview(tmp_path, monkeypatch):
     proj = _dataset(experiment_store.create_experiment(tmp_path, "p"))
     _write_val_frame(datasets_store.dataset_dir(proj, "dataset_001"))

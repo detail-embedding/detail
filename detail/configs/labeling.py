@@ -101,8 +101,16 @@ def with_negative_prompt(
 
     The negative class is named after its prompt and takes the next class id after the
     user's, so the user's classes keep their ids and a trained model's output classes stay
-    the first ones. Returns the user's classes unchanged and ``[]`` when there is no
-    negative prompt.
+    the first ones.
+
+    Args:
+        classes: The user's classes, the ones a trained model reports.
+        negative_prompt: The text prompt for the thing to learn apart, or None or blank
+            for none.
+
+    Returns:
+        The classes to label (the user's, then the negative class) and the negative class
+        names. The user's classes unchanged and ``[]`` when there is no negative prompt.
 
     Raises:
         ValueError: a class is already named or prompted like the negative prompt, so the

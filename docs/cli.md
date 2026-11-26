@@ -714,7 +714,9 @@ for its background colour), then the run's own progress follows.
   animal but is not it, such as a tether's cable. It is labelled as one more class, named after
   the prompt, so a detector trained on the dataset learns it apart from your `--class` ones, and
   that detector never reports it: its detection runs hold only your classes. `dataset status`,
-  `train status` and `model show` print it as `negative prompt`. For a tether, `cable` works
+  `train status` and `model show` print it as `negative prompt`. The detector's mAP50 still
+  averages the negative class in with yours, and `train status` and `model show` say so under
+  the metrics. For a tether, `cable` works
   with SAM 3 where `tether` finds nothing. Check it first with [`detection prompt-test`](#detection-prompt-test): it must
   find the cable and no part of the animal, such as a tail. A negative prompt that is also one
   of your classes, by name or prompt, is refused.

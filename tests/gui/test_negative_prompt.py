@@ -3,7 +3,8 @@
 Both labelling dialogs (Distill new model, Auto-label) carry the field under Advanced, test
 it with the user's prompts, refuse a clash at Test prompts, and pass it to the API. The
 dataset page, the experiment model page and the catalog model page show it when there is one
-and add no row when there is not.
+and add no row when there is not; the model pages also say beside the metrics that mAP50
+averages the negative class in.
 """
 
 import pytest
@@ -17,6 +18,7 @@ from detail.storage import datasets as datasets_store
 from detail.storage import models as models_store
 
 NEGATIVE_ROW = "cable (learned apart, never reported)"
+METRICS_NOTE = "\n(mAP50 averages in cable, which this model learned but never reports)"
 
 
 @pytest.fixture
@@ -174,6 +176,7 @@ def _write_model(experiment, negatives) -> None:
         "task": "segment",
         "classes": [{"id": 0, "name": "mouse"}],
         "weights": {"best": "run/weights/best.pt"},
+        "metrics": {"best_box_map50": 0.8},
         "status": "complete",
     }
     if negatives is not None:
@@ -196,9 +199,12 @@ def test_the_dataset_page_shows_the_negative_prompt(
     assert _row_text(page, "Negative prompt:") == expected
 
 
-@pytest.mark.parametrize("negatives, expected", [(CABLE, NEGATIVE_ROW), (None, None)])
+@pytest.mark.parametrize(
+    "negatives, expected, note",
+    [(CABLE, NEGATIVE_ROW, METRICS_NOTE), (None, None, "")],
+)
 def test_the_model_pages_show_the_negative_prompt(
-    qapp, experiment, negatives, expected
+    qapp, experiment, negatives, expected, note
 ):
     from detail.gui.pages import GlobalModelDetailPage, ModelDetailPage
 
@@ -206,6 +212,7 @@ def test_the_model_pages_show_the_negative_prompt(
     page = ModelDetailPage(experiment, "model_001")
     assert _row_text(page, "Classes:") == "mouse"
     assert _row_text(page, "Negative prompt:") == expected
+    assert _row_text(page, "Metrics:") == "best_box_map50=0.8" + note
     gid = distilled.register_distilled_model(
         experiment.dir,
         "model_001",
@@ -215,3 +222,4 @@ def test_the_model_pages_show_the_negative_prompt(
     catalog = GlobalModelDetailPage(gid)
     assert _row_text(catalog, "Classes") == "mouse"
     assert _row_text(catalog, "Negative prompt") == expected
+    assert _row_text(catalog, "Metrics") == "{'best_box_map50': 0.8}" + note

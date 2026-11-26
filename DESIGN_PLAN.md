@@ -3345,7 +3345,12 @@ tracking, keypoints, exports and tuning need nothing. Guard:
 
 **Where it stops.** The bare `best.pt` of such a model, imported with `model import`, reports the
 negative class: the checkpoint's own names include it and only `model.yaml` says to drop it (the
-model archive keeps it). A later design that wants the student's negative detections (a class
+model archive keeps it). The model's **metrics include the negative class**: Ultralytics'
+`results.csv` holds the mean mAP50 over every class trained and no per-class score, and it picks
+`best.pt` by that all-class fitness. The number is labelled rather than recomputed: the model
+pages, `train status` and `model show` print `api_models.negative_metrics_note` beside it. A
+score over the output classes alone needs per-class metrics kept from training, which belongs to
+the multi-class design, not here. A later design that wants the student's negative detections (a class
 role, say) adds a detection option whose default is today's drop, so existing runs stay
 equivalent (§3 *Compatibility contract*).
 

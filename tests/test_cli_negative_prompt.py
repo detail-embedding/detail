@@ -2,7 +2,8 @@
 
 The two launch commands hand ``--negative-prompt`` to the API by name; the fake experiment
 records what arrived and then refuses, so nothing runs. The three read-back commands print
-the dataset's or model's negative classes from a real record.
+the dataset's or model's negative classes from a real record, and the two model ones say
+beside the metrics that mAP50 averages the negative class in.
 """
 
 import types
@@ -19,6 +20,7 @@ from detail.storage import datasets as datasets_store
 from detail.storage import models as models_store
 
 NEGATIVE_LINE = "cable (learned apart, never reported)"
+METRICS_NOTE = "(mAP50 averages in cable, which this model learned but never reports)"
 
 
 class _Recorded(ValueError):
@@ -64,23 +66,23 @@ def test_the_launch_commands_pass_the_negative_prompt(
     assert calls[method]["negative_prompt"] == expected
 
 
-def _model(proj) -> str:
+def _model(proj, negatives=True) -> str:
     mdir = models_store.model_dir(proj.dir, "model_001")
     (mdir / "run" / "weights").mkdir(parents=True)
     (mdir / "run" / "weights" / "best.pt").write_bytes(b"weights")
-    models_store.write_model_yaml(
-        mdir,
-        {
-            "id": "model_001",
-            "name": "tethered",
-            "model_family": "yolo",
-            "task": "segment",
-            "classes": [{"id": 0, "name": "mouse"}],
-            "negative_classes": [{"id": 1, "name": "cable"}],
-            "weights": {"best": "run/weights/best.pt"},
-            "status": "complete",
-        },
-    )
+    record = {
+        "id": "model_001",
+        "name": "tethered",
+        "model_family": "yolo",
+        "task": "segment",
+        "classes": [{"id": 0, "name": "mouse"}],
+        "weights": {"best": "run/weights/best.pt"},
+        "metrics": {"best_box_map50": 0.8},
+        "status": "complete",
+    }
+    if negatives:
+        record["negative_classes"] = [{"id": 1, "name": "cable"}]
+    models_store.write_model_yaml(mdir, record)
     return "model_001"
 
 
@@ -110,6 +112,9 @@ def test_train_status_shows_the_negative_prompt(tmp_path):
     result = _invoke("train", "status", model_id, "--experiment", str(proj.dir))
     assert result.exit_code == 0, result.output
     assert f"  negative prompt: {NEGATIVE_LINE}\n" in result.output
+    assert f"  metrics: {{'best_box_map50': 0.8}}\n  {METRICS_NOTE}\n" in (
+        result.output
+    )
 
 
 def test_model_show_shows_the_negative_prompt(tmp_path):
@@ -122,3 +127,22 @@ def test_model_show_shows_the_negative_prompt(tmp_path):
     assert result.exit_code == 0, result.output
     assert "classes:     mouse\n" in result.output
     assert f"negative:    {NEGATIVE_LINE}\n" in result.output
+    assert (
+        f"metrics:     {{'best_box_map50': 0.8}}\n             {METRICS_NOTE}\n"
+        in result.output
+    )
+
+
+def test_a_model_without_a_negative_prompt_prints_no_note(tmp_path):
+    proj = Experiment.create("p", tmp_path)
+    model_id = _model(proj, negatives=False)
+    status = _invoke("train", "status", model_id, "--experiment", str(proj.dir))
+    gid = distilled.register_distilled_model(
+        proj.dir, model_id, source_experiment_name="p", source_experiment_id="p"
+    )
+    show = _invoke("model", "show", gid)
+    for result in (status, show):
+        assert result.exit_code == 0, result.output
+        assert "best_box_map50" in result.output
+        assert "negative" not in result.output
+        assert "averages in" not in result.output

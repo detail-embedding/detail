@@ -150,6 +150,18 @@ def _train(job: TrainingJob, run_dir: Path, progress_cb, stop_event) -> dict:
 _PREVIEW_CONF = 0.25  # keep the thumbnail from filling with low-confidence boxes
 
 
+def _has_output_label(label_path: Path, negative_class_ids: list[int]) -> bool:
+    """Whether a YOLO label file has a line for a class the model reports: not empty (a
+    background frame) and not only negative classes (§12 *Negative prompt*)."""
+    if not label_path.is_file():
+        return False
+    for line in label_path.read_text(encoding="utf-8-sig").splitlines():
+        fields = line.split()
+        if fields and int(fields[0]) not in negative_class_ids:
+            return True
+    return False
+
+
 def _capture_preview(
     dataset_dir: Path,
     best: Path,
@@ -179,13 +191,13 @@ def _capture_preview(
 
         val_dir = dataset_dir / "images" / "val"
         frames = sorted(val_dir.glob("*.jpg")) or sorted(val_dir.glob("*.png"))
-        # A background frame (empty label) would preview a model finding nothing.
+        # A background frame (empty label) would preview a model finding nothing, and so would
+        # a frame labelled only with a negative class, which the loader drops.
         labels_dir = dataset_dir / "labels" / "val"
         frames = [
             f
             for f in frames
-            if (labels_dir / f"{f.stem}.txt").is_file()
-            and (labels_dir / f"{f.stem}.txt").read_text(encoding="utf-8-sig").strip()
+            if _has_output_label(labels_dir / f"{f.stem}.txt", negative_class_ids)
         ] or frames
         if not frames:
             return None

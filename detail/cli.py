@@ -4376,6 +4376,11 @@ def train_status(model_id: str, experiment_dir: Path) -> None:
     history = proj.model_metric_history(model_id)
     if history:
         click.echo(f"  {_best_epoch_line(history, record)}")
+    note = api_models.negative_metrics_note(
+        [c["name"] for c in record.get("negative_classes") or []]
+    )
+    if note and (record.get("metrics") or history):
+        click.echo(f"  ({note})")
 
 
 @train.command("attach")
@@ -4977,6 +4982,9 @@ def model_show(model_id: str) -> None:
     if ref.provenance:
         click.echo(f"base_model:  {ref.provenance.get('base_model') or '—'}")
         click.echo(f"metrics:     {ref.provenance.get('metrics') or {}}")
+        note = api_models.negative_metrics_note(ref.negative_classes)
+        if note:
+            click.echo(f"             ({note})")
         click.echo(f"trained:     {api_models.training_summary(ref.provenance) or '—'}")
 
 

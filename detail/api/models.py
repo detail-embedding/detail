@@ -420,6 +420,23 @@ def training_summary(record: dict) -> str | None:
     return " · ".join(parts) or None
 
 
+def negative_metrics_note(negative_names: list[str]) -> str | None:
+    """What a detector's mAP50 averages over when it was trained with a negative prompt
+    (§12 *Negative prompt*): every class it learned, the negative one included, although the
+    model never reports that one. Ultralytics records the mean over all classes and keeps no
+    per-class score, so the number cannot be recomputed without it, and is labelled instead.
+
+    The one note the GUI model pages, ``train status`` and ``model show`` print beside the
+    metrics. None for a model with no negative class.
+    """
+    if not negative_names:
+        return None
+    return (
+        f"mAP50 averages in {', '.join(negative_names)}, which this model learned but "
+        "never reports"
+    )
+
+
 def _source_experiments(provenance: dict | None) -> list[dict]:
     """Source projects for the 'from project(s)' column — always a list. Accepts the
     **legacy single-source** shape (``source_experiment_name``/``_id``) and wraps it into a
