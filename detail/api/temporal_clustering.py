@@ -202,6 +202,58 @@ class TemporalClusteringRun(
             )
         return out_dir
 
+    # --- recording visualizations (§22 "Recording visualization") ---------------------------
+
+    def fitted(self):
+        """The loaded fit, read once per handle — what pose space is built from."""
+        return self._load_fit()
+
+    def visualizations(self) -> list[dict]:
+        """The saved visualization recipes of this run, oldest first, each as saved."""
+        from detail.storage import recording_visualizations as store
+
+        root = self._experiment.dir
+        return [
+            store.read_recipe(root, self.id, v)
+            for v in store.list_recipes(root, self.id)
+        ]
+
+    def save_visualization(self, config) -> str:
+        """Save a recipe (a ``RecordingVisualizationConfig`` or its dict); returns its ``viz_NNN``.
+
+        Raises:
+            ValueError: The recipe names a recording that is not one of this run's.
+        """
+        from detail.api.recording_visualization import recipe_of
+        from detail.storage import recording_visualizations as store
+
+        recipe = recipe_of(config)
+        if recipe.recording_id not in self.state().source_recording_ids:
+            raise ValueError(
+                f"{recipe.recording_id} is not one of {self.id}'s recordings"
+            )
+        viz_id = store.claim_id(self._experiment.dir, self.id)
+        store.write_recipe(self._experiment.dir, self.id, viz_id, recipe.model_dump())
+        return viz_id
+
+    def delete_visualization(self, viz_id: str) -> None:
+        """Remove a saved recipe."""
+        from detail.storage import recording_visualizations as store
+
+        store.delete_recipe(self._experiment.dir, self.id, viz_id)
+
+    def visualization(self, config, progress=None):
+        """A ``RecordingVisualization`` for a recipe (the model, its dict, or a saved ``viz_NNN``),
+        its data read now; ``progress(stage, fraction, detail)`` follows the read."""
+        from detail.api.recording_visualization import RecordingVisualization, load_data
+        from detail.storage import recording_visualizations as store
+
+        if isinstance(config, str):
+            config = store.read_recipe(self._experiment.dir, self.id, config)
+        return RecordingVisualization(
+            load_data(self._experiment, self, config, progress)
+        )
+
     # --- internals -----------------------------------------------------------------------
 
     def _state_file(self) -> Path:

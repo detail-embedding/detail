@@ -666,6 +666,22 @@ class DetectionPreview:
         mask_size = rgb.shape[:2] if with_masks else None
         return actual, rgb, self._detections_at(part, actual, mask_size)
 
+    def blank_frame(
+        self, part_index: int, local_frame: int, frame_hw: tuple[int, int]
+    ) -> tuple[int, np.ndarray, list[Detection]]:
+        """:meth:`frame`'s ``(actual_frame_idx, rgb, detections)`` for a caller that will not
+        show the footage: a white ``frame_hw`` canvas in place of the picture, the detections
+        (masks decoded at ``frame_hw``) of ``local_frame`` itself, and **no video opened**.
+
+        ``local_frame`` is what :meth:`frame` lands on whenever the part's timestamp map
+        describes its video, which is the map every surface passes; the packet-PTS fallback,
+        which can snap to a keyframe, is never reached without a decode.
+        """
+        part = self._parts[part_index]
+        canvas = np.full((int(frame_hw[0]), int(frame_hw[1]), 3), 255, dtype=np.uint8)
+        actual = int(local_frame)
+        return actual, canvas, self._detections_at(part, actual, canvas.shape[:2])
+
     def frames_range(
         self,
         part_index: int,

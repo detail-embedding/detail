@@ -204,6 +204,8 @@ class FindClustersBar(QWidget):
         self._chip: FindChip | None = None
         self._row = FlowLayout(self)
         self._row.setContentsMargins(0, 0, 0, 0)
+        #: Widgets placed right of Find (`add_beside_find`), which a chip follows.
+        self._beside: list[QWidget] = []
         # No caption of its own: the box shares the tree's zoom row (user, 2026-11-16: no
         # added height), so the field's placeholder says what it is.
         placeholder = f"Find {units}: an id or a label"
@@ -258,6 +260,13 @@ class FindClustersBar(QWidget):
         if entry is not None:
             self.search(entry)
 
+    def add_beside_find(self, widget: QWidget) -> None:
+        """Put ``widget`` directly right of **Find**, on the same row (INTERPRET's
+        *Visualize recordings…*, §22); a search's chip then follows it."""
+        anchor = self._beside[-1] if self._beside else self.find
+        self._row.insertWidget(self._row.indexOf(anchor) + 1, widget)
+        self._beside.append(widget)
+
     def clear_all(self) -> None:
         """End the search, and empty the field."""
         self.field.clear()
@@ -303,8 +312,9 @@ class FindClustersBar(QWidget):
                 self._entry, self._nodes, colour, unit=self._unit, parent=self
             )
             self._chip.picked.connect(self.picked)
-            # After Find, before Clear.
-            self._row.insertWidget(self._row.indexOf(self.find) + 1, self._chip)
+            # After Find and what sits beside it, before Clear.
+            anchor = self._beside[-1] if self._beside else self.find
+            self._row.insertWidget(self._row.indexOf(anchor) + 1, self._chip)
         self._sync_clear()
         signal.emit(self.found())
 

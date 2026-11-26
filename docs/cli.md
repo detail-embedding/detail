@@ -1174,6 +1174,25 @@ selection, written to `analysis/<an_NN>/`.
 
   Reopening a run and relabelling it never changes a snapshot.
 
+- `visualize-recording --experiment <dir> --run <an_NN> ...`: a recording, or a range of it,
+  played beside its path through pose space, its behaviours and (with `--location`, the
+  default) Location Export's path over time, written as a video for slides; it is the GUI's
+  **Visualize recordings…** window. A new one: `--recording <name> [--from-s S --to-s S]
+  [--clusters named|cut --cut-height H --colour 1,2,5] [--no-location] [--save]`; or saved ones:
+  `--viz viz_NNN` (repeat it) and `--tile <experiment>:<run>:<viz>` (any experiment). Two or more
+  play side by side on one clock (up to nine). `--theme dark` / `--theme light` (repeat for both,
+  one file each), `--speed real-time|every-frame|half-speed`, `--width`, `--workers`.
+  `--estimate` measures a few frames and prints the time and size without writing; `--list`
+  lists the run's saved visualizations. Write with `--out <file.mp4>`.
+
+  ```bash
+  detail analysis visualize-recording --experiment $PROJ --run an_01 \
+      --recording M4 --from-s 1470 --to-s 1530 --clusters cut --cut-height 0.29 --colour 1,2,3 \
+      --save --theme dark --theme light --out m4_run.mp4
+  detail analysis visualize-recording --experiment $PROJ --run an_01 --viz viz_001 \
+      --tile ../sideview:an_03:viz_002 --out top_and_side.mp4
+  ```
+
 - `list --experiment <dir>`: the experiment's analysis runs.
 - `status <an_NN> --experiment <dir>`: its module, status, recordings, **settings**, and
   artifacts. The settings block is what the run was launched with, ready to re-pass:

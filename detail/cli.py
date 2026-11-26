@@ -47,6 +47,8 @@ from detail.configs.embedding import EmbeddingConfig
 from detail.configs.labeling import LabelingConfig
 from detail.configs.location_export import LocationExportConfig
 from detail.configs.location_plots import LocationPlotView
+from detail.configs.recording_visualization import RecordingVisualizationConfig
+from detail.configs.recording_visualization import RecordingVisualizationExport
 from detail.configs.temporal_clustering import TemporalClusteringConfig
 from detail.configs.temporal_codebook import TemporalCodebookConfig
 from detail.configs.query import QueryConfig
@@ -90,6 +92,8 @@ _MONTAGE_SORTS = _clip_montage.SORTS
 _MONTAGE_SORT = _clip_montage.DEFAULT_SORT
 _TEMPORAL = TemporalClusteringConfig.model_fields
 _CODEBOOK = TemporalCodebookConfig.model_fields
+_VIZ = RecordingVisualizationConfig.model_fields
+_VIZ_OUT = RecordingVisualizationExport.model_fields
 _TRK = TrackingConfig.model_fields
 _TRAIN = UltralyticsYOLOConfig.model_fields
 _MEDPC = MedpcSessionConfig.model_fields
@@ -6964,6 +6968,172 @@ def analysis_export_temporal_clustering(
         # The id the export corresponds to, so a figure built from these CSVs can cite something
         # that is still on disk after the run is reopened and re-cut (§21).
         click.echo(f"  pinned as {pinned[-1]['snapshot_id']}")
+
+
+@analysis.command("visualize-recording")
+@_EXPERIMENT_OPT
+@click.option(
+    "--run", "run_id", required=True, help="Temporal-clustering run id (e.g. an_01)."
+)
+@click.option(
+    "--list", "list_saved", is_flag=True,
+    help="List the run's saved visualizations and exit.",
+)  # fmt: skip
+@click.option(
+    "--viz", "viz_ids", multiple=True,
+    help="A saved visualization of --run (viz_NNN) to export. Repeat it for a montage.",
+)  # fmt: skip
+@click.option(
+    "--tile", "tiles", multiple=True, metavar="EXPERIMENT:RUN:VIZ",
+    help="A saved visualization of any experiment, for a montage: the experiment folder, its "
+    "run and the viz id, joined by ':'.",
+)  # fmt: skip
+@click.option("--recording", default=None, help=_VIZ["recording_id"].description)
+@click.option(
+    "--from-s",
+    "start_s",
+    type=FINITE_FLOAT,
+    default=None,
+    help=_VIZ["start_s"].description,
+)
+@click.option(
+    "--to-s", "end_s", type=FINITE_FLOAT, default=None, help=_VIZ["end_s"].description
+)
+@click.option(
+    "--clusters", type=click.Choice(["named", "cut"]), default=_VIZ["clusters"].default,
+    show_default=True, help=_VIZ["clusters"].description,
+)  # fmt: skip
+@click.option(
+    "--cut-height", type=FINITE_FLOAT, default=None, help=_VIZ["cut_height"].description
+)
+@click.option(
+    "--colour", "cut_included", default="",
+    help=_VIZ["cut_included"].description + " Comma-separated, e.g. 1,2,5.",
+)  # fmt: skip
+@click.option(
+    "--location/--no-location", default=_VIZ["location"].default, show_default=True,
+    help=_VIZ["location"].description,
+)  # fmt: skip
+@click.option(
+    "--save", "save_recipe", is_flag=True,
+    help="Also save the recipe given by --recording and the options after it as one of the "
+    "run's visualizations (prints its viz id).",
+)  # fmt: skip
+@click.option(
+    "--theme", "themes", multiple=True, type=click.Choice(["dark", "light"]),
+    help=_VIZ_OUT["themes"].description + " Repeat for both. Default: dark.",
+)  # fmt: skip
+@click.option(
+    "--speed", type=click.Choice(["real-time", "every-frame", "half-speed"]),
+    default=_VIZ_OUT["speed"].default, show_default=True, help=_VIZ_OUT["speed"].description,
+)  # fmt: skip
+@click.option(
+    "--width", type=int, default=_VIZ_OUT["width"].default, show_default=True,
+    help=_VIZ_OUT["width"].description,
+)  # fmt: skip
+@click.option("--workers", type=int, default=None, help=_VIZ_OUT["workers"].description)
+@click.option(
+    "--estimate", "estimate_only", is_flag=True,
+    help="Measure and print the export's time and size, and write nothing.",
+)  # fmt: skip
+@click.option(
+    "--out", "out_path", type=UserPath(dir_okay=False, path_type=Path), default=None,
+    help="The .mp4 to write; with two themes, one file each (<name>_dark.mp4, <name>_light.mp4).",
+)  # fmt: skip
+def analysis_visualize_recording(
+    experiment_dir: Path,
+    run_id: str,
+    list_saved: bool,
+    viz_ids: tuple[str, ...],
+    tiles: tuple[str, ...],
+    recording: str | None,
+    start_s: float | None,
+    end_s: float | None,
+    clusters: str,
+    cut_height: float | None,
+    cut_included: str,
+    location: bool,
+    save_recipe: bool,
+    themes: tuple[str, ...],
+    speed: str,
+    width: int,
+    workers: int | None,
+    estimate_only: bool,
+    out_path: Path | None,
+) -> None:
+    """A recording (or a range) beside its path through pose space and its location, as video
+    (§22 "Recording visualization"): one recipe, or a montage of up to nine side by side.
+
+    The recipe is --recording and the options after it, or a saved --viz; a montage is several
+    --viz and/or --tile (from any experiment). Rendered in parallel worker processes.
+    """
+    from detail.api import recording_visualization as rviz
+    from detail.api.experiment import Experiment
+
+    proj = _open_experiment(experiment_dir)
+    try:
+        run = proj.temporal_clustering_run(run_id)
+        if list_saved:
+            for recipe in run.visualizations():
+                span = (
+                    "full recording"
+                    if recipe.get("start_s") is None
+                    else f"{recipe['start_s']}–{recipe['end_s']} s"
+                )
+                click.echo(
+                    f"{recipe['id']}  {recipe['recording_id']}  {span}  {recipe['clusters']}  "
+                    f"location={recipe['location']}"
+                )
+            return
+        sources: list[tuple] = []
+        if recording is not None:
+            numbers = [int(n) for n in cut_included.split(",") if n.strip()]
+            config = RecordingVisualizationConfig(
+                recording_id=proj.resolve_recording(recording).id,
+                start_s=start_s,
+                end_s=end_s,
+                clusters=clusters,
+                cut_height=cut_height,
+                cut_included=numbers,
+                location=location,
+            )
+            if save_recipe:
+                click.echo(f"saved as {run.save_visualization(config)}")
+            sources.append((run, config))
+        sources.extend((run, viz_id) for viz_id in viz_ids)
+        for tile in tiles:
+            folder, tile_run, tile_viz = tile.rsplit(":", 2)
+            other = Experiment.open(folder)
+            sources.append((other.temporal_clustering_run(tile_run), tile_viz))
+        if not sources:
+            raise click.UsageError("give --recording (a new recipe), --viz or --tile")
+        settings = RecordingVisualizationExport(
+            themes=list(themes) or ["dark"],
+            speed=speed,
+            width=width,
+            workers=workers,
+        )
+        vizs = _with_stage_progress(
+            lambda bar: [r.visualization(c, progress=bar) for r, c in sources]
+        )
+        if estimate_only:
+            est = rviz.estimate(vizs, settings)
+            click.echo(
+                f"about {est['seconds'] / 60:.1f} min with {est['workers']} workers; about "
+                f"{est['bytes_per_file'] / 1e6:.1f} MB per file; {est['files']} file(s) of "
+                f"{est['frames']} frames"
+            )
+            return
+        if out_path is None:
+            raise click.UsageError("give --out (the .mp4 to write), or --estimate")
+        written = _with_stage_progress(
+            lambda bar: rviz.export_montage(vizs, out_path, settings, bar),
+            cancellable=True,
+        )
+    except (KeyError, ValueError, FileNotFoundError) as e:
+        raise click.ClickException(str(e))
+    for path in written:
+        click.echo(f"wrote {path}")
 
 
 @analysis.command("cluster-montage")
