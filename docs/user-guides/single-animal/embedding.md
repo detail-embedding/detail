@@ -130,11 +130,11 @@ embedding run can choose the same heading.
 Next to **Heading**, click **Define…**. In the **Define a heading** dialog:
 
 1. **Name:** `body_axis`. Use letters, digits, `-` and `_` only.
-2. **Front points:** tick **nose** and **neck_base**.
-3. **Back points:** tick **tail_base**.
+2. **Front points:** tick **head**.
+3. **Back points:** tick **tail**.
 4. Click **Save**.
 
-![The Define a heading dialog: the name body_axis, nose and neck_base ticked as front points, and tail_base ticked as the back point. Numbered markers sit on every control.](../../assets/user-guides/single-animal/embedding/define-heading.png)
+![The Define a heading dialog: the name body_axis, head ticked as the front point, and tail ticked as the back point. Numbered markers sit on every control.](../../assets/user-guides/single-animal/embedding/define-heading.png)
 
 ??? info "What everything on this screen does"
     1. **Name**: the heading's name, as the **Heading** list shows it.
@@ -144,23 +144,26 @@ Next to **Heading**, click **Define…**. In the **Define a heading** dialog:
     5. **Cancel**: closes the dialog without saving.
 
 ??? info "About this step: why these points"
-    The heading runs from the middle of the back points to the middle of the front points.
-    Using two front points rather than one means that when the nose is hidden for a frame,
-    the neck still gives a heading. The tail tip and tail middle are left out because the
-    tail swings on its own; the base of the tail stays in line with the body.
+    The heading runs from the middle of the back points to the middle of the front points:
+    here, from the base of the tail to the head, the longest line along the body, so the
+    direction is steady. The midpoint is left out: it sits between the two, so it adds
+    nothing to the direction, and when the animal bends it would pull the heading to one
+    side. With a skeleton of your own, such as the 5-point one in chapter 4, `nose` is the
+    front and `tail_base` the back. Leave out points on the tail beyond its base: the tail
+    swings on its own.
 
-The dialog closes, and **Heading** shows **body_axis (nose, neck_base ← tail_base)**.
+The dialog closes, and **Heading** shows **body_axis (head ← tail)**.
 
 ## 3. Run and check the embedding
 
-Click **Run**. The run's page opens. On the demo, the three 5-minute videos took about 5
+Click **Run**. The run's page opens. On the demo, the three 5-minute videos took about 3
 minutes on an 8 GB GPU.
 
 When it is complete, the page shows a **PCA** cloud: every embedded frame as a dot, placed
 so that frames with close vectors are close together. Click a dot to see that frame, and the
 image the model was shown, beside the cloud.
 
-![The embedding run's page: run_005, complete, with the results table of box1, box2 and box3, the heading coverage line and its warning, and below them the PCA cloud of box1's frames, the clicked frame 2920, and the model's input: the mouse cut out on a blue background. Numbered markers sit on every control.](../../assets/user-guides/single-animal/embedding/embedding-run.png)
+![The embedding run's page: run_005, complete, with the results table of box1, box2 and box3, the heading coverage line and its warning, and below them the PCA cloud of box3's frames, the clicked frame 2580, and the model's input: the mouse cut out on a blue background. Numbered markers sit on every control.](../../assets/user-guides/single-animal/embedding/embedding-run.png)
 
 ??? info "What everything on this screen does"
     The lines under the table are for the recording chosen in the table. The strip marks
@@ -176,23 +179,22 @@ image the model was shown, beside the cloud.
 - Every recording's **Status** says **complete**.
 - Click a few dots in the cloud. In **Model input**, the animal is cut out cleanly and its
   head points right.
-- The heading line says most frames were covered, about 90% or more.
+- The heading line says most frames were covered.
 
 ??? info "About this step: the orange warning"
     Detail warns when the heading was known on fewer than 95% of the tracked frames, or was
-    lost for more than 2 seconds at a time. On the demo, box1 was covered on 96% of its
-    frames, and its longest gap was 3.3 seconds, so the warning shows. Those frames are left
-    out rather than embedded the wrong way round.
+    lost for more than 2 seconds at a time. Those frames are left out rather than embedded
+    the wrong way round.
 
     A short gap like that is fine to carry on with. Much less coverage means the keypoints
-    are often unsure of the nose or tail: mark a few more example frames, especially of the
+    are often unsure of the head or tail: mark a few more example frames, especially of the
     poses where the heading was lost, and distill the keypoint model again (chapter 4).
 
 ??? warning "If this doesn't work"
     - **The run stops saying the model is not installed:** download **dinov3_vit
       vit_large** in the **Model manager** (see [Configure Detail](../configure.md)).
     - **The head points left or up in Model input on many frames:** the heading's front and
-      back points are swapped, or the keypoints put the nose at the tail. Check the
+      back points are swapped, or the keypoints put the head at the tail. Check the
       keypoints on the video (chapter 4, step 5).
     - **Very few frames are embedded:** the **Keypoint track run** does not match the
       **Tracking run**. Choose the keypoint track run made from this tracking.

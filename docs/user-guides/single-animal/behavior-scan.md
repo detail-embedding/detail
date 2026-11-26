@@ -55,27 +55,28 @@ In the **Launch an analysis run** dialog:
 
 ??? info "What everything on this screen does"
     1. **Module**: what to run, here **Behavior scan**.
-    2. **Start from**: fills the form from a previous run's settings, examples included.
-    3. **Recordings**: the recordings to search. They must all be in the embed run.
-    4. **Select all**: ticks every recording.
-    5. **Clear**: unticks them.
-    6. **Embed run**: which embedding to search.
-    7. **Subject**: which tracked animal to search. One animal is **0**.
-    8. **Behaviors**: each behavior's name, how many example and non-example clips it
+    2. **Scrollbar**: scrolls the dialog.
+    3. **Start from**: fills the form from a previous run's settings, examples included.
+    4. **Recordings**: the recordings to search. They must all be in the embed run.
+    5. **Select all**: ticks every recording.
+    6. **Clear**: unticks them.
+    7. **Embed run**: which embedding to search.
+    8. **Subject**: which tracked animal to search. One animal is **0**.
+    9. **Behaviors**: each behavior's name, how many example and non-example clips it
        has, how they spread over recordings and animals, and their total time. Empty until
        you mark examples.
-    9. **Mark examples…**: opens the video to mark each behavior's clips (step 2).
-    10. **Min match length**: the shortest match to return, in seconds. **off** returns
+    10. **Mark examples…**: opens the video to mark each behavior's clips (step 2).
+    11. **Min match length**: the shortest match to return, in seconds. **off** returns
         every length.
-    11. **Smoothing**: how much the score is smoothed over time before matches are formed,
+    12. **Smoothing**: how much the score is smoothed over time before matches are formed,
         as a share of the example clips' length. Higher joins brief matches into one.
-    12. **Extent fraction**: where a match ends: it grows out from its best frame while the
+    13. **Extent fraction**: where a match ends: it grows out from its best frame while the
         score stays above this share of the best. Lower gives longer matches.
-    13. **Max duration**: the longest match, as a multiple of the example clips' length.
-    14. **Advanced Settings**: opens 4 more settings, shown below.
-    15. **Run**: starts the scan (step 3).
-    16. **Cancel**: closes the dialog without starting anything.
-    17. **?**: a short explanation of the setting beside it.
+    14. **Max duration**: the longest match, as a multiple of the example clips' length.
+    15. **Advanced Settings**: opens 4 more settings, shown below.
+    16. **Run**: starts the scan (step 3).
+    17. **Cancel**: closes the dialog without starting anything.
+    18. **?**: a short explanation of the setting beside it.
 
     An orange line under the table, when there is one, is advice, not an error: for
     example, that a clip is under 2 seconds, since longer clips give a steadier result.
@@ -191,7 +192,7 @@ recordings](keypoints.md#side-view-and-isometric-recordings) in chapter 4).
 
 ## 3. Run the scan
 
-Click **Run**. The run's page opens; the scan of the three demo videos took about 10
+Click **Run**. The run's page opens; the scan of the three demo videos took a few
 seconds. Its **Status** stays **open**: a behavior scan is finished only when you say so,
 after choosing the cut-offs.
 
@@ -232,55 +233,28 @@ choose it before reading the measures, and report it with them: it is part of th
 
 The **Calibrate** view is where the cut-off is set, one behavior at a time.
 
-![The Calibrate view for rearing: a clip playing top left with the mouse outlined; top right the curve of instances kept at each cut-off, with the cut-off 0.5 marked, and the instances kept per recording; under them the row of clips ordered by confidence with the cut-off between them; then the ethograms of where the kept instances fall in each recording, the locations of each instance in each box, and the interpretation section. Numbered markers sit on every control.](../../assets/user-guides/single-animal/behavior-scan/calibrate.png)
+![The Calibrate view for rearing: the line saying the cut-off 0.5 is saved and keeps 59 of 360 clips; the curve of clips kept at each cut-off, with 0.5 marked; the cut-off slider and the clips kept per recording; and under them the grid of clips, most confident first, each outlined, the first few tagged your example. Numbered markers sit on every control.](../../assets/user-guides/single-animal/behavior-scan/calibrate.png)
 
 ??? info "What everything on this screen does"
-    The line at the top counts the matches kept at the cut-off: here 57 rearing matches at
-    0.5. The curve top right shows how many would be kept at every cut-off: left is loose,
-    right is strict. **Kept per recording** under it shows how many each recording keeps.
+    The line at the top counts the clips kept at the cut-off: here 59 of 360 rearing clips
+    at 0.5. The curve on the left shows how many would be kept at every cut-off: left is
+    loose, right is strict. **Kept per recording** shows how many each recording keeps.
+    Double-click a clip to play it in a window of its own.
 
-    1. **Cut-off**: the cut-off, to type in. Beside it, how many matches it keeps.
-    2. **Cut-off slider**: moves the cut-off. The curve's line and the counts follow.
-    3. **The slider**: moves through the clip playing above it.
-    4. **Play**: plays the clip.
-    5. **Speed**: how fast **Play** plays.
-    6. **Prev frame**: steps one frame back.
-    7. **Next frame**: steps one frame forward.
-    8. **Export video…**: saves the clip as a video file.
-    9. **Context**: plays a few seconds before and after the clip too. **off** plays the
-       clip alone.
-    10. **Masks**: tints the animal's outline on the video.
-    11. **Frame number**: the frame of the clip shown.
-    12. **Clips**: folds the row of clips away or opens it again. The row is every match
-        in order of confidence, least confident on the left. The grey divider is the
-        cut-off: clips right of it are kept. Click a clip to play it above. Drag the
-        divider to move the cut-off.
-    13. **◀**: moves the cut-off one clip to the left, keeping one more.
-    14. **▶**: moves it one clip to the right, keeping one fewer.
-    15. **Scrollbar**: scrolls the row of clips.
-    16. **⤒ centre on cutoff**: scrolls the row back to the divider.
-    17. **Cut here**: puts the cut-off at the clip you last clicked, so it is the least
-        confident one kept. It says what that would keep before you press it.
-    18. **Ethograms**: folds away or opens one strip per recording, marking where in the
-        video the kept matches fall. Scroll over them to zoom.
-    19. **Locations**: folds away or opens one square per recording, with a dot where each
-        kept match happened in the field of view. Click a dot to play it beside them.
-    20. **The slider**: moves through the match playing beside the squares.
-    21. **Play**: plays that match.
-    22. **Speed**: how fast **Play** plays.
-    23. **Prev frame**: steps one frame back.
-    24. **Next frame**: steps one frame forward.
-    25. **Export video…**: saves that match as a video file.
-    26. **Context**: plays a few seconds either side too.
-    27. **Masks**: tints the animal's outline.
-    28. **Frame number**: the frame of the match shown.
-    29. **Interpretation**: folds away or opens the measures of the kept matches, such as
-        how fast the animal moved during them.
-    30. **Measure this run**: works those measures out. It reads every match's tracking,
-        which can take a minute on a long run.
-    31. **Finish**: says you are done with the run. It can be reopened. Greyed out until
-        every behavior has a cut-off.
-    32. **Reopen**: opens a finished run again, to change a cut-off. Greyed out while the
+    1. **Behavior**: which behavior's cut-off to set.
+    2. **Keep clips from 0.5 up**: saves the cut-off shown. Greyed out while it is already
+       saved.
+    3. **Cut-off**: the cut-off, to type in. Beside it, how many clips it keeps.
+    4. **Cut-off slider**: moves the cut-off. The curve's line, the counts and the line across
+       the clips follow.
+    5. **Show ▾**: what the clips show: the video, the animal's outline, a trail of where it
+       has been.
+    6. **Size**: how big the clips are.
+    7. **Export ▾**: saves the clips.
+    8. **Scrollbar**: scrolls the clips.
+    9. **Finish**: says you are done with the run. It can be reopened. Greyed out until
+       every behavior has a cut-off.
+    10. **Reopen**: opens a finished run again, to change a cut-off. Greyed out while the
         run is open.
 
 Every match plays at once, in a grid, most confident first. The cut-off is a dashed line
@@ -328,22 +302,35 @@ behaviors, recordings or a metadata group on the left to narrow both. Read the l
 a mistake the scan makes again and again, such as a mouse leaning on one wall counted as
 rearing, stands out in a list.
 
-![The Browse view for rearing at cut-off 0.5: the list of kept matches, each with its recording, start, end and confidence, and the player beside it playing the first one. Numbered markers sit on every control.](../../assets/user-guides/single-animal/behavior-scan/browse.png)
+![The Browse view for rearing at cut-off 0.5: 113 kept matches; the behaviors, recordings and metadata filters on the left; the ethogram of box1 to box3 across the top; the list of matches with behavior, recording, start, duration and confidence; and the player beside it on the first one. Numbered markers sit on every control.](../../assets/user-guides/single-animal/behavior-scan/browse.png)
 
 ??? info "What everything on this screen does"
-    1. **The matches**: every match above the cut-off. Click a column's heading to sort by
-       it, such as **Confidence**. Click a row to play it.
-    2. **The slider**: moves through the match playing.
-    3. **Play**: plays or pauses the match.
-    4. **Speed**: how fast **Play** plays.
-    5. **Prev frame**: steps one frame back.
-    6. **Next frame**: steps one frame forward.
-    7. **Export video…**: saves the match as a video file.
-    8. **Context**: plays a few seconds either side too.
-    9. **Masks**: tints the animal's outline.
-    10. **Frame number**: the frame shown.
-    11. **Finish**: says you are done with the run.
-    12. **Reopen**: opens a finished run again.
+    1. **Behavior**: which behavior's cut-off is shown.
+    2. **Clear filters**: ticks every behavior, recording and group again.
+    3. **Ethogram**: folds the ethogram away or opens it again: one row per recording, each
+       kept match marked in its behavior's colour. Click a mark to play it; scroll over it
+       to zoom.
+    4. **Behaviors**: each behavior, with its matches and time. Untick one to leave it out.
+    5. **Search recordings**: narrows the recordings below to those whose name has the text.
+    6. **Recordings**: untick a recording to leave it out.
+    7. **The matches**: every kept match, with its behavior, recording, start, duration and
+       confidence. Click a heading to sort by it; click a row to play it.
+    8. **Metadata**: shows one group of recordings, such as one drug, or **Any group**.
+    9. **The slider**: moves through the match playing.
+    10. **Play**: plays the match.
+    11. **Speed**: how fast **Play** plays.
+    12. **Prev frame**: steps one frame back.
+    13. **Next frame**: steps one frame forward.
+    14. **Export video…**: saves the match as a video file.
+    15. **Context**: plays a few seconds either side too. **off** plays the match alone.
+    16. **Masks**: tints the animal's outline.
+    17. **Frame number**: the frame shown.
+    18. **Export 1 selected**: saves the matches selected in the list.
+    19. **Export all 113**: saves every match in the list.
+    20. **Finish**: says you are done with the run. It can be reopened. Greyed out until
+        every behavior has a cut-off.
+    21. **Reopen**: opens a finished run again, to change a cut-off. Greyed out while the
+        run is open.
 
 **Audit** puts a number on how often the kept matches are really the behavior: the
 **precision**. You watch **every match the cut-off keeps**, one recording at a time, and take
@@ -360,13 +347,23 @@ Audit shows only *rearing has no cutoff yet* and a **Go to Calibrate** button.
 Do this for each recording. The behavior's precision appears above the list once every
 recording is reviewed.
 
-![The Audit view for rearing before any review: 57 instances of rearing, none reviewed yet, and the Start auditing (25 clips) button. Numbered markers sit on every control.](../../assets/user-guides/single-animal/behavior-scan/audit.png)
+![The Audit view for rearing before any review: 0 of 3 recordings reviewed at 0.50, with box1, box2 and box3 each listed with its clips and not reviewed, and the grid empty until a recording is chosen. Numbered markers sit on every control.](../../assets/user-guides/single-animal/behavior-scan/audit.png)
 
 ??? info "What everything on this screen does"
-    1. **Start auditing (25 clips)**: starts the review. Once begun, it reads **Review N
-       more**.
-    2. **Finish**: says you are done with the run.
-    3. **Reopen**: opens a finished run again.
+    1. **Behavior**: which behavior to review.
+    2. **The recordings**: each recording, with how many clips its cut-off keeps and how far
+       its review has got. Click one to review it.
+    3. **✓ Finish review**: says you have looked at every clip of the recording. Greyed out
+       until the last clip has been on screen.
+    4. **Undo (⌘Z)**: puts back the last clip you took out (++ctrl+z++).
+    5. **Show ▾**: what the clips show: the video, the animal's outline, a trail of where it
+       has been.
+    6. **Export ▾**: saves the clips.
+    7. **Size**: how big the clips are.
+    8. **Finish**: says you are done with the run. It can be reopened. Greyed out until
+       every behavior has a cut-off.
+    9. **Reopen**: opens a finished run again, to change a cut-off. Greyed out while the
+       run is open.
 
     A match you take out leaves the behavior's matches: **Browse**, the measures and every
     export leave it out. Raise the cut-off afterwards and the review still stands; lower it
@@ -388,23 +385,40 @@ recording is reviewed.
 total time, the share of time, the bout lengths, the time to the first bout, and the gap
 between bouts.
 
-![The Measures view: a table of recording, subject, label, measure, value, unit and n, with bouts, rate, total time, share of time, mean and median bout length, bout length spread, time to first bout and gap between bouts, for grooming and rearing in each recording. Numbered markers sit on every control.](../../assets/user-guides/single-animal/behavior-scan/measures.png)
+![The Measures view: the table of measures by recording, subject, label, measure, value, unit and n; the locations of each kept rearing match, one square per box, with the note that all of the first recording's fall in the top third; the player beside them; and the Interpretation section with Measure this run. Numbered markers sit on every control.](../../assets/user-guides/single-animal/behavior-scan/measures.png)
 
 ??? info "What everything on this screen does"
-    1. **The measures**: one row per recording, behavior and measure, with its value, unit
+    1. **Behavior**: which behavior the locations and the interpretation below are for.
+    2. **The measures**: one row per recording, behavior and measure, with its value, unit
        and how many bouts it comes from (**n**). Click a heading to sort.
-    2. **Finish**: says you are done with the run.
-    3. **Reopen**: opens a finished run again.
+    3. **Locations**: folds away or opens one square per recording, with a dot where each
+       kept match happened. Click a dot to play it beside them.
+    4. **The slider**: moves through the match playing.
+    5. **Play**: plays the match.
+    6. **Speed**: how fast **Play** plays.
+    7. **Prev frame**: steps one frame back.
+    8. **Next frame**: steps one frame forward.
+    9. **Export video…**: saves the match as a video file.
+    10. **Context**: plays a few seconds either side too. **off** plays the match alone.
+    11. **Masks**: tints the animal's outline.
+    12. **Frame number**: the frame shown.
+    13. **Interpretation**: folds away or opens the measures of the kept matches, such as how
+        fast the animal moved during them.
+    14. **Measure this run**: works those measures out. It reads every match's tracking,
+        which can take a minute on a long run.
+    15. **Finish**: says you are done with the run. It can be reopened. Greyed out until
+        every behavior has a cut-off.
+    16. **Reopen**: opens a finished run again, to change a cut-off. Greyed out while the
+        run is open.
 
     The **Export…** button at the top of the window saves every kept match with its times
     (**Behavior instances**), the ethograms, the per-frame behavior labels, or the clips, for
     your own analysis in a spreadsheet, R or Python.
 
 ??? warning "If the numbers look too large"
-    On the demo, rearing takes 34% of box1's time and grooming 30%. Both are much more
-    than these mice really spend, and many of the same stretches are counted as both. That
-    is what the top-down view does to two behaviors that look alike from above (see step
-    2). Raising both cut-offs, adding non-examples, and auditing are how you bring them
+    When two behaviors look alike from above, such as rearing and grooming, the scan can
+    count many of the same stretches as both, and each takes much more of the time than
+    the animals really spend (see step 2). Raising both cut-offs, adding non-examples, and auditing are how you bring them
     down to what is true. A side camera tells them apart far better.
 
 When every behavior's cut-off is chosen and checked, click **Finish**. It stays greyed out

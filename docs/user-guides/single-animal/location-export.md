@@ -60,7 +60,7 @@ analysis run** dialog:
    change it.
 5. Click **Run**.
 
-![The Launch an analysis run dialog for Location export: module Location export, all three recordings ticked, and the tracking run list with the tracking from chapter 3 ticked, highlighted. Numbered markers sit on every control.](../../assets/user-guides/single-animal/location-export/launch-location-export.png)
+![The Launch an analysis run dialog for Location export: module Location export, all three recordings ticked, the tracking run list with the tracking from chapter 3 ticked, highlighted, the keypoint track run at (none), and rows per second at every frame. Numbered markers sit on every control.](../../assets/user-guides/single-animal/location-export/launch-location-export.png)
 
 ??? info "What everything on this screen does"
     1. **Module**: what to run, here **Location export**.
@@ -71,13 +71,13 @@ analysis run** dialog:
     6. **Tracking run**: which tracking to read the animal's position from, with how many
        of the ticked recordings have it. Tick more than one only when different recordings
        were tracked in different ways.
-    7. **Run**: starts the export.
-    8. **Cancel**: closes the dialog without starting anything.
-    9. **?**: a short explanation of the setting beside it.
-
-The picture was taken before **Keypoint track run** and **Rows per second** were added. They
-sit under **Tracking run**, each with a **?** beside it; leave **Keypoint track run** at
-**(none)** for now (step 5).
+    7. **Keypoint track run**: the keypoints to write as well (step 5). Leave it at
+       **(none)** for now.
+    8. **Rows per second**: how many rows a second to write. **every frame** writes one for
+       every tracked frame (see below).
+    9. **Run**: starts the export.
+    10. **Cancel**: closes the dialog without starting anything.
+    11. **?**: a short explanation of the setting beside it.
 
 ??? info "About this step: rows per second"
     - **Rows per second.** Left at **every frame**, the export writes a row for every frame
@@ -103,17 +103,18 @@ processor.
 ## 3. Open the files
 
 When the run's **Status** says **complete**, its page has two cards under **Results**:
-**Plots ›** (step 4) and **Files ›**. The pictures in this step were taken before the
-**Plots** card was added, when **Files ›** was called **Results ›**.
+**Plots ›** (step 4) and **Files ›**.
 
-![The Location export run's page: an_01, location_export, complete, with the Results card, and the Open output folder, Delete analysis and Start new analysis buttons. Numbered markers sit on every control.](../../assets/user-guides/single-animal/location-export/location-export-run.png)
+![The Location export run's page: an_01, location_export, complete, with the Plots and Files cards, and the Open output folder, Delete analysis and Start new analysis buttons. Numbered markers sit on every control.](../../assets/user-guides/single-animal/location-export/location-export-run.png)
 
 ??? info "What everything on this screen does"
-    1. **Results ›**, now **Files ›**: the files the run wrote. Click it to list them.
-    2. **Open output folder**: opens the folder that holds them, to copy them or open them
+    1. **Plots ›**: the animal's path, where it spent its time, its speed and its body
+       (step 4).
+    2. **Files ›**: the files the run wrote. Click it to list them.
+    3. **Open output folder**: opens the folder that holds them, to copy them or open them
        in a spreadsheet, R or Python.
-    3. **Delete analysis**: deletes the run and its files, after asking.
-    4. **Start new analysis**: opens **New analysis** again.
+    4. **Delete analysis**: deletes the run and its files, after asking.
+    5. **Start new analysis**: opens **New analysis** again.
 
     The **Notes** button at the top of the window opens a notes box for the run.
 
@@ -253,13 +254,13 @@ it. Each recording's folder then has a fourth file:
 
 | Column | What it is |
 |---|---|
-| `keypoint` | The body point, such as `nose`. |
+| `keypoint` | The body point: `head`, `midpoint` or `tail`. |
 | `x`, `y` | Where it was, in `_norm`, `_px` and `_mm`. Blank on a frame it was not placed. |
 | `score` | How sure the keypoint model was. |
 | `visible` | 1 if the score was over the cut-off, 0 if not; a point under it keeps its place. |
 
-On **Plots**, **Position** then lists the body points: a path follows the nose, say, with a
-gap wherever the nose was hidden. **Keypoints** draws several points on one path, a colour
+On **Plots**, **Position** then lists the body points: a path follows the head, say, with a
+gap wherever the head was hidden. **Keypoints** draws several points on one path, a colour
 each.
 
 A keypoint tracking made from another tracking run is refused when you click **Run**, naming

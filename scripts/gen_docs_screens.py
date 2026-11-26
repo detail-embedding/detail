@@ -1185,6 +1185,129 @@ def _recording_run_id(demo_dir: Path, run_id: str, recording_id: str) -> str:
     return entry["run_id"]
 
 
+#: The recording single-frame pictures are drawn from: box 3, whose mouse is the most often
+#: clearly stretched out. Box 1's sits against the wall, curled, for much of its video.
+_PICTURE_RECORDING = "recording_002"
+
+
+def _elongation(
+    demo_dir: Path, recording_id: str, frames=None, every: int = 10
+) -> dict[int, tuple[float, int]]:
+    """``{frame_idx: (elongation, area_px)}``: the outline's spread along its long axis over
+    its spread along the short one, from the demo's newest detection masks.
+
+    A picture of one frame shows a stretched-out animal, never a curled one, because a curled
+    or grooming animal hides the body's line the points and outlines are about. The ratio of
+    the mask's two spreads tells the two apart at any angle, where the box's aspect does not.
+    ``frames`` limits it to those frames; otherwise every ``every``-th frame is measured.
+    """
+    import cv2
+    import numpy as np
+
+    from detail.core.utils import decode_mask
+    from detail.executor import rundir
+    from detail.storage import zarr_store
+
+    det_id = _recording_run_id(
+        demo_dir, _runs_of(demo_dir, "detection")[-1], recording_id
+    )
+    det_dir = demo_dir / "recordings" / recording_id / "detections" / det_id
+    size = rundir.mask_resolution(det_dir, "part_001")
+    group = zarr_store.open_group(det_dir / "part_001.zarr", mode="r")
+    frame_idx = np.asarray(group["frame_idx"][:])
+    wanted = (
+        sorted({int(f) for f in frames})
+        if frames is not None
+        else list(range(0, int(frame_idx.max()) + 1, every))
+    )
+    out: dict[int, tuple[float, int]] = {}
+    for row in np.flatnonzero(np.isin(frame_idx, wanted)):
+        mask = decode_mask(str(group["mask_rle"][row]), size)
+        area = int(mask.sum())
+        if area < 50:
+            continue
+        # The body alone: an opening strips the tail, a thin line that would make a curled
+        # animal with its tail held out read as a long one.
+        k = max(3, int(0.25 * area**0.5)) | 1
+        body = cv2.morphologyEx(
+            mask.astype(np.uint8), cv2.MORPH_OPEN, np.ones((k, k), np.uint8)
+        )
+        ys, xs = np.nonzero(body)
+        if xs.size < 50:
+            continue
+        spread = np.linalg.eigvalsh(np.cov(np.vstack([xs, ys]).astype(float)))
+        ratio = float(np.sqrt(spread[-1] / max(spread[0], 1e-9)))
+        out[int(frame_idx[row])] = (ratio, area)
+    return out
+
+
+def _most_elongated(demo_dir: Path, recording_id: str, frames=None) -> int:
+    """The frame of ``recording_id`` (among ``frames``, if given) whose animal is clearly
+    stretched out: see :func:`_elongation`.
+
+    Not the single most elongated outline, which is a mask glitch or a tail held straight
+    out from a curled body as often as a long animal: among outlines of about the usual
+    area, the most elongated below the top 3% of the recording's elongations.
+    """
+    import numpy as np
+
+    every = _elongation(demo_dir, recording_id)
+    found = every if frames is None else _elongation(demo_dir, recording_id, frames)
+    if not found:
+        raise LookupError(f"no outlined frame to choose on {recording_id}")
+    ratios = np.array([r for r, _ in every.values()])
+    areas = np.array([a for _, a in every.values()])
+    ceiling = float(np.percentile(ratios, 97))
+    usual = float(np.median(areas))
+    fitting = {
+        f: r for f, (r, a) in found.items() if r <= ceiling and 0.8 <= a / usual <= 1.25
+    }
+    pool = fitting or {f: r for f, (r, _) in found.items()}
+    return max(pool, key=pool.get)
+
+
+def _well_placed_frame(demo_dir: Path, recording_id: str, kt_id: str) -> int:
+    """A frame of ``recording_id`` to show keypoints on: an elongated mouse whose points sit
+    where they belong.
+
+    Among frames where the head–tail line is near its usual full length, every point is
+    confident and the midpoint sits on the line's middle (a straight, stretched body), the
+    one with the most elongated outline (:func:`_elongation`). A frame chosen by the outline
+    alone can show the tail point partway up the back.
+    """
+    import numpy as np
+
+    from detail.storage import zarr_store
+
+    track = zarr_store.open_group(
+        demo_dir
+        / "recordings"
+        / recording_id
+        / "keypoint_track"
+        / kt_id
+        / "track_0"
+        / "part_001.zarr",
+        mode="r",
+    )
+    frame_idx = np.asarray(track["frame_idx"][:])
+    points = np.asarray(track["points"][:, :, :2])
+    scores = np.asarray(track["point_scores"][:])
+    length = np.linalg.norm(points[:, 0] - points[:, -1], axis=1)
+    usual = float(np.nanpercentile(length, 95))
+    middle = (points[:, 0] + points[:, -1]) / 2
+    off_line = np.linalg.norm(points[:, len(points[0]) // 2] - middle, axis=1)
+    placed = (
+        (length >= 0.85 * usual)
+        & (length <= 1.1 * usual)
+        & (scores.min(axis=1) >= 0.8)
+        & (off_line <= 0.05 * np.maximum(length, 1e-9))
+    )
+    candidates = frame_idx[placed][::3]
+    if candidates.size == 0:
+        return _most_elongated(demo_dir, recording_id)
+    return _most_elongated(demo_dir, recording_id, candidates)
+
+
 def _choose_item(combo: QComboBox, text: str) -> None:
     """Pick the first entry of ``combo`` whose label contains ``text``."""
     items = [combo.itemText(i) for i in range(combo.count())]
@@ -1434,6 +1557,7 @@ def _render_keypoints(demo_dir: Path) -> None:
     Drawn from the demo experiment: its example set ``ex_01`` and its keypoint distill (the
     newest distill run) were made by these steps.
     """
+    from detail.gui import scrubber as scrubber_module
     from detail.gui.example_set_picker import ExampleSetPicker, NewExampleSetDialog
     from detail.gui.fit import DistillDialog
     from detail.gui.keypoint_labeling import KeypointLabelingDialog
@@ -1519,7 +1643,16 @@ def _render_keypoints(demo_dir: Path) -> None:
     labeling.resize(1200, 860)
     labeling.show()
     _pump(8)
-    labeling._go_to(5)  # a marked frame, so the skeleton shows
+    # A marked frame, so the skeleton shows, and the one whose mouse is most stretched out.
+    frames = demo.example_set(set_id).frames
+    labeling._go_to(
+        max(
+            range(len(frames)),
+            key=lambda i: _elongation(
+                demo_dir, frames[i].recording_id, [frames[i].frame_idx]
+            ).get(frames[i].frame_idx, (0.0, 0))[0],
+        )
+    )
     _pump(6)
     shot = labeling.grab()
     _number_screen(shot, labeling, labeling, f"{out}/labeling.png")
@@ -1589,10 +1722,14 @@ def _render_keypoints(demo_dir: Path) -> None:
         print(f"  {n}. {_describe(w)}")
     launch.reject()
 
-    kt_id = _recording_run_id(demo_dir, kt_run, "recording_000")
-    window._open_recording_run("recording_000", "keypoint_track", kt_id)
+    kt_id = _recording_run_id(demo_dir, kt_run, _PICTURE_RECORDING)
+    window._open_recording_run(_PICTURE_RECORDING, "keypoint_track", kt_id)
     _pump(12)
     page = _page(window)
+    page.findChild(scrubber_module.FrameScrubber).set_frame(
+        _well_placed_frame(demo_dir, _PICTURE_RECORDING, kt_id)
+    )
+    _pump(12)
     shot = window.grab()
     _number_screen(shot, window, page, f"{out}/keypoint-result.png")
     _save_callouts()  # before close: a page with a live player can hang it
@@ -1600,8 +1737,8 @@ def _render_keypoints(demo_dir: Path) -> None:
 
 
 def _render_new_skeleton(demo_dir: Path) -> None:
-    """Chapter 4's *Make your own skeleton*: the Keypoints manager and a 6-point skeleton
-    drawn in the editor, plus a 5-point side-view skeleton. Nothing is saved.
+    """Chapter 4's *Optional: make your own skeleton*: the Keypoints manager and a 5-point
+    skeleton (the midline with the ears) drawn in the editor. Nothing is saved.
 
     The library is shown with its presets only, so this machine's own skeletons stay out of
     the picture.
@@ -1628,27 +1765,19 @@ def _render_new_skeleton(demo_dir: Path) -> None:
     _number_screen(shot, window, page, f"{out}/keypoints-manager.png")
 
     dialog = SkeletonEditorDialog(None, [], {e["name"] for e in presets}, parent=window)
-    dialog._name.setText("mouse 6-point")
+    dialog._name.setText("mouse 5-point")
     # Seen from above with the nose up the screen, the animal's left ear is on the left.
     dialog.editor().load(
         Skeleton(
-            names=("nose", "left_ear", "right_ear", "neck", "back", "tail_base"),
+            names=("nose", "left_ear", "right_ear", "back", "tail_base"),
             edges=(
                 ("nose", "left_ear"),
                 ("nose", "right_ear"),
-                ("nose", "neck"),
-                ("neck", "back"),
+                ("nose", "back"),
                 ("back", "tail_base"),
             ),
             pairs=(("left_ear", "right_ear"),),
-            layout=(
-                (0.5, 0.14),
-                (0.38, 0.27),
-                (0.62, 0.27),
-                (0.5, 0.38),
-                (0.5, 0.6),
-                (0.5, 0.86),
-            ),
+            layout=((0.5, 0.14), (0.38, 0.27), (0.62, 0.27), (0.5, 0.52), (0.5, 0.86)),
         )
     )
     editor = dialog.editor()
@@ -1661,32 +1790,6 @@ def _render_new_skeleton(demo_dir: Path) -> None:
     shot = dialog.grab()
     _number_screen(shot, dialog, dialog, f"{out}/new-skeleton.png")
     # Closed past its own reject, which would ask about the unsaved skeleton in a modal box.
-    QDialog.reject(dialog)
-
-    dialog = SkeletonEditorDialog(None, [], {e["name"] for e in presets}, parent=window)
-    dialog._name.setText("mouse side")
-    # Seen from the side, the nose to the left.
-    dialog.editor().load(
-        Skeleton(
-            names=("nose", "left_ear", "right_ear", "mid_back", "tail_base"),
-            edges=(
-                ("nose", "left_ear"),
-                ("nose", "right_ear"),
-                ("nose", "mid_back"),
-                ("mid_back", "tail_base"),
-            ),
-            pairs=(("left_ear", "right_ear"),),
-            layout=((0.12, 0.5), (0.3, 0.3), (0.36, 0.38), (0.56, 0.36), (0.88, 0.5)),
-        )
-    )
-    dialog.editor()._selected = 0  # the nose: no pair, so Side is greyed out
-    dialog.editor()._show()
-    dialog._sync()
-    dialog.resize(760, 820)
-    dialog.show()
-    _settle()
-    shot = dialog.grab()
-    _number_screen(shot, dialog, dialog, f"{out}/side-skeleton.png")
     QDialog.reject(dialog)
     window.close()
 
@@ -1765,8 +1868,8 @@ def _render_embedding(demo_dir: Path) -> None:
     heading = HeadingDefinitionDialog(demo, skeleton_names=names, parent=launch)
     heading._name.setText("body_axis")
     for widget, ticked in (
-        (heading._front_list, ("nose", "neck_base")),
-        (heading._back_list, ("tail_base",)),
+        (heading._front_list, ("head",)),
+        (heading._back_list, ("tail",)),
     ):
         if widget is None:
             continue
@@ -1786,11 +1889,18 @@ def _render_embedding(demo_dir: Path) -> None:
     window._open_run(embedding_run)
     _settle()
     page = _page(window)
+    # Box 3, whose mouse is the clearest stretched out; the point clicked is the frame nearest
+    # its most elongated outline (see _most_elongated).
+    results = page.findChild(pages.RunResults)
+    results._table.view.selectRow(results._recording_ids.index(_PICTURE_RECORDING))
+    _pump(3)
     preview = page.findChild(EmbeddingRunPreview)
     _wait_until(lambda: preview._preview is not None, seconds=300)
     _pump(2)
     points = preview._scatter.points()
-    preview._on_clicked(None, [points[len(points) // 3]])
+    target = _most_elongated(demo_dir, _PICTURE_RECORDING)
+    nearest = min(points, key=lambda pt: abs(preview._locators[pt.data()][2] - target))
+    preview._on_clicked(None, [nearest])
     _pump(15)
     shot = window.grab()
     _number_screen(shot, window, page, f"{out}/embedding-run.png")
@@ -1946,12 +2056,6 @@ def _render_behavior_scan(demo_dir: Path) -> None:
         workspace.setMaximumHeight(height or 16_777_215)
         _pump(5)
         _settle()
-        if name == "Calibrate":  # a kept clip in the player, as a click on it would
-            strip = workspace._calibrate._grid
-            shown = sorted(strip._cells)
-            pick = shown[len(shown) // 2 + 1]
-            strip._emit_clicked(strip._all[pick], pick)
-            _pump(10)
         if name == "Browse":  # the first instance playing beside the list
             table = workspace._browse.findChild(QTableView)
             table.setCurrentIndex(table.model().index(0, 0))
@@ -2130,7 +2234,7 @@ def _render_clustering(demo_dir: Path, node: str = "", part: str = "all") -> Non
 
 #: The demo's labels for chapter 8, put on by eye from each cluster's montage: the guide's own,
 #: not careful scoring. Cluster ids are the demo clustering's.
-_DEMO_LABELS = {20: "walking", 1: "staying in place"}
+_DEMO_LABELS = {20: "walking", 3: "staying in place"}
 _DEMO_CLUSTER = 20
 
 
@@ -2235,6 +2339,16 @@ def _render_clustering_views(demo_dir: Path) -> None:
         _settle()
         workspace = _page(window).findChild(ClusterWorkspace)
         view = workspace._browse if name == "Browse" else _page(window)
+        if name == "Browse":  # a walking bout in the player: a stretched-out mouse
+            table = workspace._browse.findChild(QTableView)
+            model = table.model()
+            walking = next(
+                r
+                for r in range(model.rowCount())
+                if model.index(r, 0).data() == _DEMO_LABELS[_DEMO_CLUSTER]
+            )
+            table.setCurrentIndex(model.index(walking, 0))
+            _pump(15)
         shot = window.grab()
         _number_screen(shot, window, view, f"{out}/{name.lower()}.png")
     _save_callouts()
