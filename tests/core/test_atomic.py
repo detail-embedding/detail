@@ -1,10 +1,11 @@
 import pytest
 
 from detail.core import atomic
+from tests.module_clock import patch_module_time
 
 
 def test_retry_on_lock_succeeds_after_transient_error(monkeypatch):
-    monkeypatch.setattr(atomic.time, "sleep", lambda _s: None)
+    patch_module_time(monkeypatch, atomic, sleep=lambda _s: None)
     calls = {"n": 0}
 
     def flaky():
@@ -18,7 +19,7 @@ def test_retry_on_lock_succeeds_after_transient_error(monkeypatch):
 
 
 def test_retry_on_lock_reraises_after_exhausting(monkeypatch):
-    monkeypatch.setattr(atomic.time, "sleep", lambda _s: None)
+    patch_module_time(monkeypatch, atomic, sleep=lambda _s: None)
     calls = {"n": 0}
 
     def always_locked():
@@ -31,7 +32,7 @@ def test_retry_on_lock_reraises_after_exhausting(monkeypatch):
 
 
 def test_retry_on_lock_does_not_swallow_other_errors(monkeypatch):
-    monkeypatch.setattr(atomic.time, "sleep", lambda _s: None)
+    patch_module_time(monkeypatch, atomic, sleep=lambda _s: None)
 
     def boom():
         raise ValueError("not a lock")

@@ -2,11 +2,12 @@
 
 from detail.gui import throttle
 from detail.gui.throttle import Throttle
+from tests.module_clock import patch_module_time
 
 
 def _clocked(monkeypatch):
     now = [100.0]
-    monkeypatch.setattr(throttle.time, "monotonic", lambda: now[0])
+    patch_module_time(monkeypatch, throttle, monotonic=lambda: now[0])
     return now
 
 
